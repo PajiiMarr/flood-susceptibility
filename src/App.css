@@ -1,0 +1,28 @@
+/* App.css – Full‑width map version */
+
+/* Reset all margins and paddings */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Make html, body, and the root element fill the viewport */
+html, body, #root {
+  width: 100%;
+  height: 100%;
+}
+
+/* The container that holds the map – full width and height */
+.app-container {
+  width: 100%;
+  height: 100%;
+}
+
+/* Optional: remove any default focus outlines (or keep them for accessibility) */
+:focus {
+  outline: none;
+}
+
+/* If you still want to keep some of the original styles for other parts of the app,
+   you can add them below, but for a full‑width map, the above is all you need. */
