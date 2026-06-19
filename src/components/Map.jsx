@@ -151,17 +151,16 @@ function POILayer({ onFacilities }) {
     onFacilitiesRef.current = onFacilities;
   }, [onFacilities]);
 
-  // We'll use a CORS proxy in production to bypass the Overpass CORS restriction.
-  // The proxy will fetch the URL and return the response with the correct headers.
-  const PROXY_URL = import.meta.env.PROD
-    ? "https://api.allorigins.win/raw?url="
-    : "";
-
   const fetchWithRetry = async (url, retries = 3, delay = 1000) => {
-    const targetUrl = PROXY_URL + encodeURIComponent(url);
+    // In production, use a CORS proxy. In development, fetch directly.
+    const isProduction = import.meta.env.PROD;
+    const finalUrl = isProduction
+      ? `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+      : url;
+
     for (let i = 0; i < retries; i++) {
       try {
-        const response = await fetch(targetUrl, {
+        const response = await fetch(finalUrl, {
           headers: {
             "User-Agent":
               "FloodMapZamboanga/1.0 (https://flood-susceptibility.vercel.app)",
