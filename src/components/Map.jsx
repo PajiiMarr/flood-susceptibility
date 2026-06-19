@@ -5,7 +5,7 @@ import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 
 // ---------- Safe environment variable access (fixes "process is not defined") ----------
-const VITE_STADIA_KEY = import.meta.env.VITE_STADIA_KEY || '';
+const VITE_STADIA_KEY = import.meta.env.VITE_STADIA_KEY || "";
 
 const WORLD_RING = [
   [-90, -180],
@@ -71,7 +71,8 @@ async function fetchRoadDistances(origin, facilities) {
   const url = `${OSRM_BASE}/table/v1/driving/${coordsParam}?sources=0&annotations=distance,duration`;
   const res = await fetch(url);
   const data = await res.json();
-  if (data.code !== "Ok") throw new Error(data.message || "Table request failed");
+  if (data.code !== "Ok")
+    throw new Error(data.message || "Table request failed");
   return facilities.map((f, i) => ({
     facility: f,
     distanceMeters: data.distances[0][i + 1],
@@ -134,6 +135,10 @@ function LegendControl() {
 // onFacilities so the routing layer can use the same dataset.
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// POI layer — fetches health facilities and reports them up via onFacilities
+// --------------------------------------------------------------------------
+
 function POILayer({ onFacilities }) {
   const map = useMap();
   const [loading, setLoading] = useState(true);
@@ -146,15 +151,30 @@ function POILayer({ onFacilities }) {
     onFacilitiesRef.current = onFacilities;
   }, [onFacilities]);
 
+  // We'll use a CORS proxy in production to bypass the Overpass CORS restriction.
+  // The proxy will fetch the URL and return the response with the correct headers.
+  const PROXY_URL = import.meta.env.PROD
+    ? "https://api.allorigins.win/raw?url="
+    : "";
+
   const fetchWithRetry = async (url, retries = 3, delay = 1000) => {
+    const targetUrl = PROXY_URL + encodeURIComponent(url);
     for (let i = 0; i < retries; i++) {
       try {
-        const response = await fetch(url);
+        const response = await fetch(targetUrl, {
+          headers: {
+            "User-Agent":
+              "FloodMapZamboanga/1.0 (https://flood-susceptibility.vercel.app)",
+          },
+        });
         if (response.status === 429) {
-          await new Promise((resolve) => setTimeout(resolve, delay * Math.pow(2, i)));
+          await new Promise((resolve) =>
+            setTimeout(resolve, delay * Math.pow(2, i)),
+          );
           continue;
         }
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        if (!response.ok)
+          throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         if (data.remark && data.remark.includes("runtime error")) {
           throw new Error(`Overpass API error: ${data.remark}`);
@@ -162,7 +182,9 @@ function POILayer({ onFacilities }) {
         return data;
       } catch (err) {
         if (i === retries - 1) throw err;
-        await new Promise((resolve) => setTimeout(resolve, delay * Math.pow(2, i)));
+        await new Promise((resolve) =>
+          setTimeout(resolve, delay * Math.pow(2, i)),
+        );
       }
     }
   };
@@ -176,7 +198,10 @@ function POILayer({ onFacilities }) {
         setLoading(true);
         setError(null);
         const cacheKey = "poi_zamboanga_health_3617877";
-        const cached = sessionStorage.getItem(cacheKey);
+
+        // In production we skip the cache to always get fresh data (optional)
+        const isProduction = import.meta.env.PROD;
+        const cached = isProduction ? null : sessionStorage.getItem(cacheKey);
 
         if (cached) {
           const data = JSON.parse(cached);
@@ -187,6 +212,7 @@ function POILayer({ onFacilities }) {
           return;
         }
 
+        // Primary query: pharmacies & hospitals
         const overpassQuery = `
           [out:json][timeout:60];
           ( rel(3617877); );
@@ -207,8 +233,11 @@ function POILayer({ onFacilities }) {
         const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(overpassQuery)}`;
         let data = await fetchWithRetry(url, 3, 1000);
 
+        // If no results, try fallback (clinics & doctors)
         if (!data.elements || data.elements.length === 0) {
-          console.log("No pharmacies/hospitals found, searching for clinics and doctors...");
+          console.log(
+            "No pharmacies/hospitals found, searching for clinics and doctors...",
+          );
           const fallbackQuery = `
             [out:json][timeout:60];
             ( rel(3617877); );
@@ -231,7 +260,11 @@ function POILayer({ onFacilities }) {
           data = await fetchWithRetry(fallbackUrl, 3, 1000);
         }
 
-        sessionStorage.setItem(cacheKey, JSON.stringify(data));
+        // Cache for future visits (only if not production)
+        if (!isProduction) {
+          sessionStorage.setItem(cacheKey, JSON.stringify(data));
+        }
+
         if (isMounted) {
           addMarkersToMap(data);
           setLoading(false);
@@ -282,7 +315,10 @@ function POILayer({ onFacilities }) {
           });
           name = tags.name || "Pharmacy";
           type = "Pharmacy";
-        } else if (tags.amenity === "hospital" || tags.healthcare === "hospital") {
+        } else if (
+          tags.amenity === "hospital" ||
+          tags.healthcare === "hospital"
+        ) {
           icon = L.divIcon({
             html: `<div style="font-size:24px; text-shadow: 0 0 2px white;">🏥</div>`,
             iconSize: [24, 24],
@@ -304,7 +340,7 @@ function POILayer({ onFacilities }) {
             iconSize: [24, 24],
             className: "custom-poi-marker",
           });
-          name = tags.name || `Doctor's Office`;
+          name = tags.name || "Doctor's Office";
           type = "Medical Office";
         } else {
           icon = defaultIcon;
@@ -325,7 +361,9 @@ function POILayer({ onFacilities }) {
             ${tags.website ? `Website: <a href="${tags.website}" target="_blank">link</a>` : ""}
           </div>
         `;
-        L.marker([lat, lon], { icon }).bindPopup(popupContent).addTo(markerGroup);
+        L.marker([lat, lon], { icon })
+          .bindPopup(popupContent)
+          .addTo(markerGroup);
       });
 
       console.log(`✅ Added ${markerCount} health facility markers`);
@@ -337,16 +375,22 @@ function POILayer({ onFacilities }) {
 
     fetchPois();
 
+    // Status control (bottom-left)
     if (map) {
       statusControl = L.control({ position: "bottomleft" });
       statusControl.onAdd = () => {
         const div = L.DomUtil.create("div", "poi-status");
         div.style.cssText =
           "background:rgba(0,0,0,0.7);color:white;padding:5px 10px;border-radius:4px;font-size:12px;z-index:1000";
-        if (loading) div.innerText = "⏳ Loading health facilities across Zamboanga City...";
+        if (loading)
+          div.innerText =
+            "⏳ Loading health facilities across Zamboanga City...";
         else if (error) div.innerText = `⚠️ ${error}`;
-        else if (poiCount === 0) div.innerText = "⚠️ No health facilities found. Try zooming in or check OSM data.";
-        else div.innerText = `✅ ${poiCount} health facilities loaded (Zamboanga City)`;
+        else if (poiCount === 0)
+          div.innerText =
+            "⚠️ No health facilities found. Try zooming in or check OSM data.";
+        else
+          div.innerText = `✅ ${poiCount} health facilities loaded (Zamboanga City)`;
         return div;
       };
       statusControl.addTo(map);
@@ -354,7 +398,8 @@ function POILayer({ onFacilities }) {
 
     return () => {
       isMounted = false;
-      if (markerLayerRef.current && map) map.removeLayer(markerLayerRef.current);
+      if (markerLayerRef.current && map)
+        map.removeLayer(markerLayerRef.current);
       if (statusControl && map) map.removeControl(statusControl);
     };
   }, [map, poiCount]);
@@ -391,12 +436,16 @@ function RoutingLayer({ facilities }) {
         // Phase 2: real road distances for just those candidates.
         const ranked = await fetchRoadDistances(origin, candidates);
         const valid = ranked.filter((r) => r.distanceMeters != null);
-        if (valid.length === 0) throw new Error("No reachable facility found by road");
+        if (valid.length === 0)
+          throw new Error("No reachable facility found by road");
         valid.sort((a, b) => a.distanceMeters - b.distanceMeters);
         const best = valid[0];
 
         // Phase 3: actual road geometry for the winner only.
-        const route = await fetchRoadRoute(origin, [best.facility.lat, best.facility.lon]);
+        const route = await fetchRoadRoute(origin, [
+          best.facility.lat,
+          best.facility.lon,
+        ]);
 
         setResult({ ...best, routeGeoJSON: route.geometry });
         setMode("done");
@@ -406,7 +455,7 @@ function RoutingLayer({ facilities }) {
         setMode("error");
       }
     },
-    [facilities]
+    [facilities],
   );
 
   useMapEvents({
@@ -433,7 +482,7 @@ function RoutingLayer({ facilities }) {
       (err) => {
         setErrorMsg(err.message);
         setMode("error");
-      }
+      },
     );
   };
 
@@ -462,7 +511,9 @@ function RoutingLayer({ facilities }) {
           className: "custom-poi-marker",
         }),
       })
-        .bindPopup(`<strong>${result.facility.name}</strong><br>Nearest by road`)
+        .bindPopup(
+          `<strong>${result.facility.name}</strong><br>Nearest by road`,
+        )
         .addTo(group);
 
       if (result.routeGeoJSON) {
@@ -497,14 +548,19 @@ function RoutingLayer({ facilities }) {
         lineHeight: 1.4,
       }}
     >
-      {mode === "idle" && <div>🖱️ Click the map to find the nearest health facility by road</div>}
-      {mode === "loading" && <div>⏳ Calculating nearest facility by road...</div>}
+      {mode === "idle" && (
+        <div>🖱️ Click the map to find the nearest health facility by road</div>
+      )}
+      {mode === "loading" && (
+        <div>⏳ Calculating nearest facility by road...</div>
+      )}
       {mode === "error" && <div>⚠️ {errorMsg}</div>}
       {mode === "done" && result && (
         <div>
           🏥 <strong>{result.facility.name}</strong> ({result.facility.type})
           <br />
-          📏 {(result.distanceMeters / 1000).toFixed(2)} km · ⏱️ {Math.round(result.durationSeconds / 60)} min by road
+          📏 {(result.distanceMeters / 1000).toFixed(2)} km · ⏱️{" "}
+          {Math.round(result.durationSeconds / 60)} min by road
         </div>
       )}
       {mode !== "loading" && (
@@ -632,7 +688,10 @@ function FloodMap() {
 
   // Optional: log the key for debugging (safe)
   useEffect(() => {
-    console.log("🔑 Stadia API Key:", VITE_STADIA_KEY || "❌ NOT FOUND – check .env and Vercel variables");
+    console.log(
+      "🔑 Stadia API Key:",
+      VITE_STADIA_KEY || "❌ NOT FOUND – check .env and Vercel variables",
+    );
   }, []);
 
   return (
