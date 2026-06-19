@@ -4,6 +4,9 @@ import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 
+// ---------- Safe environment variable access (fixes "process is not defined") ----------
+const VITE_STADIA_KEY = import.meta.env.VITE_STADIA_KEY || '';
+
 const WORLD_RING = [
   [-90, -180],
   [90, -180],
@@ -627,6 +630,11 @@ function FloodMap() {
   const position = [7.0736, 122.01];
   const [facilities, setFacilities] = useState([]);
 
+  // Optional: log the key for debugging (safe)
+  useEffect(() => {
+    console.log("🔑 Stadia API Key:", VITE_STADIA_KEY || "❌ NOT FOUND – check .env and Vercel variables");
+  }, []);
+
   return (
     <>
       <style>{`
@@ -657,7 +665,7 @@ function FloodMap() {
       >
         <TileLayer
           attribution='&copy; <a href="https://stadiamaps.com/">Stadia Maps</a> &copy; <a href="https://openmaptiles.org/">OpenMapTiles</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-          url="https://tiles.stadiamaps.com/tiles/alidade_satellite/{z}/{x}/{y}{r}.png"
+          url={`https://tiles.stadiamaps.com/tiles/alidade_satellite/{z}/{x}/{y}{r}.png?api_key=${VITE_STADIA_KEY}`}
         />
         <ZamboangaMask />
         <POILayer onFacilities={setFacilities} />
