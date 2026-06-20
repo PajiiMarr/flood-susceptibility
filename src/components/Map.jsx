@@ -152,15 +152,9 @@ function POILayer({ onFacilities }) {
   }, [onFacilities]);
 
   const fetchWithRetry = async (url, retries = 3, delay = 1000) => {
-    // In production, use a CORS proxy. In development, fetch directly.
-    const isProduction = import.meta.env.PROD;
-    const finalUrl = isProduction
-      ? `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
-      : url;
-
     for (let i = 0; i < retries; i++) {
       try {
-        const response = await fetch(finalUrl, {
+        const response = await fetch(url, {
           headers: {
             "User-Agent":
               "FloodMapZamboanga/1.0 (https://flood-susceptibility.vercel.app)",
