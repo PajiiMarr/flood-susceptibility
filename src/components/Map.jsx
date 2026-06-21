@@ -1,4 +1,3 @@
-// FloodMap.jsx
 import { useEffect, useState, useRef, useCallback } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
@@ -169,7 +168,16 @@ function POILayer({ onFacilities }) {
           .bindPopup(popupContent)
           .addTo(markerGroup);
 
-        return { lat: row.lat, lon: row.lon, name: row.name, type: row.type };
+        return {
+          lat: row.lat,
+          lon: row.lon,
+          name: row.name,
+          type: row.type,
+          addr_street: row.addr_street,
+          addr_city: row.addr_city,
+          phone: row.phone,
+          website: row.website,
+        };
       });
 
       setPoiCount(facilitiesList.length);
@@ -205,22 +213,6 @@ function POILayer({ onFacilities }) {
 
     fetchPois();
 
-    // if (map) {
-    //   statusControl = L.control({ position: "bottomleft" });
-    //   statusControl.onAdd = () => {
-    //     const div = L.DomUtil.create("div", "poi-status");
-    //     div.style.cssText =
-    //       "background:rgba(0,0,0,0.7);color:white;padding:5px 10px;border-radius:4px;font-size:12px;z-index:1000";
-    //     if (loading) div.innerText = "⏳ Loading health facilities...";
-    //     else if (error) div.innerText = `⚠️ ${error}`;
-    //     else if (poiCount === 0)
-    //       div.innerText = "⚠️ No health facilities found in database.";
-    //     else div.innerText = `✅ ${poiCount} health facilities loaded (Zamboanga City)`;
-    //     return div;
-    //   };
-    //   statusControl.addTo(map);
-    // }
-
     return () => {
       isMounted = false;
       if (markerLayerRef.current && map)
@@ -243,8 +235,8 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation }) {
   const layerRef = useRef(null);
 
   useEffect(() => {
-    onSelectionChange?.({ mode, result, errorMsg });
-  }, [mode, result, errorMsg, onSelectionChange]);
+    onSelectionChange?.({ mode, result, errorMsg, origin });
+  }, [mode, result, errorMsg, origin, onSelectionChange]);
 
   const runSearch = useCallback(
     async (latlng) => {
@@ -293,18 +285,11 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation }) {
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        console.log("Geolocation success:", {
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-          timestamp: new Date(pos.timestamp).toISOString(),
-        });
         const latlng = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         setOrigin(latlng);
         runSearch(latlng);
       },
       (err) => {
-        console.log("Geolocation error:", err.code, err.message);
         let message = err.message;
         if (err.code === 1) {
           message =
@@ -334,7 +319,9 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation }) {
       layerRef.current = null;
     }
     if (!origin) return;
+
     const group = L.layerGroup();
+
     L.marker(origin, {
       icon: L.divIcon({
         html: `<div style="font-size:26px;">📍</div>`,
@@ -342,6 +329,7 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation }) {
         className: "custom-poi-marker",
       }),
     }).addTo(group);
+
     if (result) {
       L.marker([result.facility.lat, result.facility.lon], {
         icon: L.divIcon({
@@ -354,18 +342,23 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation }) {
           `<strong>${result.facility.name}</strong><br>Nearest by road`,
         )
         .addTo(group);
+
       if (result.routeGeoJSON) {
         L.geoJSON(result.routeGeoJSON, {
           style: { color: "#1a73e8", weight: 4, opacity: 0.85 },
         }).addTo(group);
       }
     }
+
     group.addTo(map);
     layerRef.current = group;
+
     return () => {
       if (layerRef.current) map.removeLayer(layerRef.current);
     };
   }, [origin, result, map]);
+
+  return null;
 }
 
 function ZamboangaMask() {
@@ -461,6 +454,7 @@ function ZamboangaMask() {
 function FloodMap({ onSelectionChange, onRequestLocation }) {
   const position = [7.0736, 122.01];
   const [facilities, setFacilities] = useState([]);
+
   return (
     <>
       <style>{`
@@ -504,4 +498,5 @@ function FloodMap({ onSelectionChange, onRequestLocation }) {
     </>
   );
 }
+
 export default FloodMap;
