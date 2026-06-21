@@ -26,10 +26,8 @@ function getRandomRiskLevel() {
   return levels[Math.floor(Math.random() * levels.length)];
 }
 
-// Public OSRM demo server — rate-limited; self-host or use a keyed service for production.
 const OSRM_BASE = "https://router.project-osrm.org";
 
-// Straight-line distance, used only as a cheap pre-filter before the road-based OSRM call.
 function haversineDistance([lat1, lon1], [lat2, lon2]) {
   const R = 6371000;
   const toRad = (deg) => (deg * Math.PI) / 180;
@@ -52,7 +50,6 @@ function kNearestByHaversine(origin, facilities, k = 15) {
     .map((r) => r.facility);
 }
 
-// One-to-many road distances/durations from origin to each candidate.
 async function fetchRoadDistances(origin, facilities) {
   if (facilities.length === 0) return [];
   const coordsParam = [origin, ...facilities.map((f) => [f.lat, f.lon])]
@@ -70,7 +67,6 @@ async function fetchRoadDistances(origin, facilities) {
   }));
 }
 
-// Road-following geometry for the winning facility only.
 async function fetchRoadRoute(origin, dest) {
   const url = `${OSRM_BASE}/route/v1/driving/${origin[1]},${origin[0]};${dest[1]},${dest[0]}?overview=full&geometries=geojson`;
   const res = await fetch(url);
@@ -116,8 +112,6 @@ function LegendControl() {
   return null;
 }
 
-// Loads health facilities from Supabase and reports them up via onFacilities
-// so RoutingLayer can use the same dataset.
 const TYPE_ICONS = {
   Pharmacy: "💊",
   Hospital: "🏥",
@@ -224,48 +218,60 @@ function POILayer({ onFacilities }) {
   return null;
 }
 
-// Click the map (or "use my location") to find the nearest health facility
-// by road and draw the road-following route.
-function RoutingLayer({ facilities, onSelectionChange, onRequestLocation }) {
+// Distinct colors for 1st, 2nd, 3rd closest
+const ROUTE_COLORS = ["#1a73e8", "#e68a00", "#c62828"];
+
+function RoutingLayer({ facilities, onSelectionChange, onRequestLocation, filterType }) {
   const map = useMap();
   const [mode, setMode] = useState("idle");
   const [origin, setOrigin] = useState(null);
-  const [result, setResult] = useState(null);
+  const [results, setResults] = useState([]);       // array of top facilities
   const [errorMsg, setErrorMsg] = useState(null);
   const layerRef = useRef(null);
 
   useEffect(() => {
-    onSelectionChange?.({ mode, result, errorMsg, origin });
-  }, [mode, result, errorMsg, origin, onSelectionChange]);
+    onSelectionChange?.({ mode, results, errorMsg, origin });
+  }, [mode, results, errorMsg, origin, onSelectionChange]);
 
   const runSearch = useCallback(
     async (latlng) => {
       setMode("loading");
       setErrorMsg(null);
       try {
-        if (!facilities || facilities.length === 0) {
-          throw new Error("No health facilities loaded yet");
+        const filtered = filterType
+          ? facilities.filter((f) => f.type === filterType)
+          : facilities;
+        if (!filtered || filtered.length === 0) {
+          throw new Error(`No facilities found for type "${filterType}"`);
         }
-        const origin = [latlng.lat, latlng.lng];
-        const candidates = kNearestByHaversine(origin, facilities, 15);
-        const ranked = await fetchRoadDistances(origin, candidates);
+        const originCoords = [latlng.lat, latlng.lng];
+        const candidates = kNearestByHaversine(originCoords, filtered, 15);
+        const ranked = await fetchRoadDistances(originCoords, candidates);
         const valid = ranked.filter((r) => r.distanceMeters != null);
         if (valid.length === 0)
           throw new Error("No reachable facility found by road");
         valid.sort((a, b) => a.distanceMeters - b.distanceMeters);
-        const best = valid[0];
-        const route = await fetchRoadRoute(origin, [
-          best.facility.lat,
-          best.facility.lon,
-        ]);
-        setResult({ ...best, routeGeoJSON: route.geometry });
+        const top = valid.slice(0, 3); // take top 3
+
+        // Fetch routes for each top facility in parallel
+        const routes = await Promise.all(
+          top.map(async (item) => {
+            const route = await fetchRoadRoute(originCoords, [
+              item.facility.lat,
+              item.facility.lon,
+            ]);
+            return { ...item, routeGeoJSON: route.geometry };
+          })
+        );
+
+        setResults(routes);
         setMode("done");
       } catch (err) {
         setErrorMsg(err.message);
         setMode("error");
       }
     },
-    [facilities],
+    [facilities, filterType],
   );
 
   useMapEvents({
@@ -308,11 +314,18 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation }) {
     );
   }, [runSearch]);
 
-  // Expose handleUseMyLocation to the parent so the right panel's button can trigger it
   useEffect(() => {
     onRequestLocation?.(handleUseMyLocation);
   }, [handleUseMyLocation, onRequestLocation]);
 
+  // Re‑run search when filterType changes, if we already have an origin
+  useEffect(() => {
+    if (origin && mode !== "loading") {
+      runSearch(origin);
+    }
+  }, [filterType]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Draw origin and multiple routes + markers
   useEffect(() => {
     if (layerRef.current) {
       map.removeLayer(layerRef.current);
@@ -322,6 +335,7 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation }) {
 
     const group = L.layerGroup();
 
+    // Origin marker
     L.marker(origin, {
       icon: L.divIcon({
         html: `<div style="font-size:26px;">📍</div>`,
@@ -330,25 +344,30 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation }) {
       }),
     }).addTo(group);
 
-    if (result) {
-      L.marker([result.facility.lat, result.facility.lon], {
+    // Top facilities
+    results.forEach((item, index) => {
+      const color = ROUTE_COLORS[index] || "#9e9e9e";
+
+      // Facility marker with rank
+      L.marker([item.facility.lat, item.facility.lon], {
         icon: L.divIcon({
-          html: `<div style="font-size:26px;">🎯</div>`,
-          iconSize: [26, 26],
+          html: `<div style="font-size:20px; background:${color}; color:white; border-radius:50%; width:24px; height:24px; display:flex; align-items:center; justify-content:center; font-weight:bold; box-shadow: 0 0 4px rgba(0,0,0,0.3);">${index + 1}</div>`,
+          iconSize: [24, 24],
           className: "custom-poi-marker",
         }),
       })
         .bindPopup(
-          `<strong>${result.facility.name}</strong><br>Nearest by road`,
+          `<strong>#${index + 1} ${item.facility.name}</strong><br>${(item.distanceMeters / 1000).toFixed(2)} km, ${Math.round(item.durationSeconds / 60)} min`,
         )
         .addTo(group);
 
-      if (result.routeGeoJSON) {
-        L.geoJSON(result.routeGeoJSON, {
-          style: { color: "#1a73e8", weight: 4, opacity: 0.85 },
+      // Route line
+      if (item.routeGeoJSON) {
+        L.geoJSON(item.routeGeoJSON, {
+          style: { color, weight: 5, opacity: 0.9 },
         }).addTo(group);
       }
-    }
+    });
 
     group.addTo(map);
     layerRef.current = group;
@@ -356,7 +375,7 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation }) {
     return () => {
       if (layerRef.current) map.removeLayer(layerRef.current);
     };
-  }, [origin, result, map]);
+  }, [origin, results, map]);
 
   return null;
 }
@@ -451,7 +470,7 @@ function ZamboangaMask() {
   return null;
 }
 
-function FloodMap({ onSelectionChange, onRequestLocation }) {
+function FloodMap({ onSelectionChange, onRequestLocation, filterType }) {
   const position = [7.0736, 122.01];
   const [facilities, setFacilities] = useState([]);
 
@@ -492,6 +511,7 @@ function FloodMap({ onSelectionChange, onRequestLocation }) {
           facilities={facilities}
           onSelectionChange={onSelectionChange}
           onRequestLocation={onRequestLocation}
+          filterType={filterType}
         />
         <LegendControl />
       </MapContainer>
