@@ -185,7 +185,9 @@ function POILayer({ onFacilities }) {
 
         const { data, error: queryError } = await supabase
           .from("health_facilities")
-          .select("name, type, lat, lon, addr_street, addr_city, phone, website");
+          .select(
+            "name, type, lat, lon, addr_street, addr_city, phone, website",
+          );
 
         if (queryError) throw queryError;
 
@@ -221,7 +223,8 @@ function POILayer({ onFacilities }) {
 
     return () => {
       isMounted = false;
-      if (markerLayerRef.current && map) map.removeLayer(markerLayerRef.current);
+      if (markerLayerRef.current && map)
+        map.removeLayer(markerLayerRef.current);
       if (statusControl && map) map.removeControl(statusControl);
     };
   }, [map, poiCount]);
@@ -231,13 +234,17 @@ function POILayer({ onFacilities }) {
 
 // Click the map (or "use my location") to find the nearest health facility
 // by road and draw the road-following route.
-function RoutingLayer({ facilities }) {
+function RoutingLayer({ facilities, onSelectionChange, onRequestLocation }) {
   const map = useMap();
-  const [mode, setMode] = useState("idle"); // idle | loading | done | error
+  const [mode, setMode] = useState("idle");
   const [origin, setOrigin] = useState(null);
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState(null);
   const layerRef = useRef(null);
+
+  useEffect(() => {
+    onSelectionChange?.({ mode, result, errorMsg });
+  }, [mode, result, errorMsg, onSelectionChange]);
 
   const runSearch = useCallback(
     async (latlng) => {
@@ -248,7 +255,6 @@ function RoutingLayer({ facilities }) {
           throw new Error("No health facilities loaded yet");
         }
         const origin = [latlng.lat, latlng.lng];
-
         const candidates = kNearestByHaversine(origin, facilities, 15);
         const ranked = await fetchRoadDistances(origin, candidates);
         const valid = ranked.filter((r) => r.distanceMeters != null);
@@ -256,12 +262,10 @@ function RoutingLayer({ facilities }) {
           throw new Error("No reachable facility found by road");
         valid.sort((a, b) => a.distanceMeters - b.distanceMeters);
         const best = valid[0];
-
         const route = await fetchRoadRoute(origin, [
           best.facility.lat,
           best.facility.lon,
         ]);
-
         setResult({ ...best, routeGeoJSON: route.geometry });
         setMode("done");
       } catch (err) {
@@ -281,7 +285,7 @@ function RoutingLayer({ facilities }) {
     },
   });
 
-  const handleUseMyLocation = () => {
+  const handleUseMyLocation = useCallback(() => {
     if (!navigator.geolocation) {
       setErrorMsg("Geolocation not supported by this browser");
       setMode("error");
@@ -289,16 +293,40 @@ function RoutingLayer({ facilities }) {
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        console.log("Geolocation success:", {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+          timestamp: new Date(pos.timestamp).toISOString(),
+        });
         const latlng = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         setOrigin(latlng);
         runSearch(latlng);
       },
       (err) => {
-        setErrorMsg(err.message);
+        console.log("Geolocation error:", err.code, err.message);
+        let message = err.message;
+        if (err.code === 1) {
+          message =
+            "Location permission was denied. You can still click the map directly to find the nearest facility.";
+        } else if (err.code === 2) {
+          message =
+            "Your location couldn't be determined. Check that Location Services are enabled for your browser, or click the map directly instead.";
+        } else if (err.code === 3) {
+          message =
+            "Location request timed out. Try again, or click the map directly.";
+        }
+        setErrorMsg(message);
         setMode("error");
       },
+      { timeout: 10000, maximumAge: 60000 },
     );
-  };
+  }, [runSearch]);
+
+  // Expose handleUseMyLocation to the parent so the right panel's button can trigger it
+  useEffect(() => {
+    onRequestLocation?.(handleUseMyLocation);
+  }, [handleUseMyLocation, onRequestLocation]);
 
   useEffect(() => {
     if (layerRef.current) {
@@ -306,9 +334,7 @@ function RoutingLayer({ facilities }) {
       layerRef.current = null;
     }
     if (!origin) return;
-
     const group = L.layerGroup();
-
     L.marker(origin, {
       icon: L.divIcon({
         html: `<div style="font-size:26px;">📍</div>`,
@@ -316,7 +342,6 @@ function RoutingLayer({ facilities }) {
         className: "custom-poi-marker",
       }),
     }).addTo(group);
-
     if (result) {
       L.marker([result.facility.lat, result.facility.lon], {
         icon: L.divIcon({
@@ -329,73 +354,18 @@ function RoutingLayer({ facilities }) {
           `<strong>${result.facility.name}</strong><br>Nearest by road`,
         )
         .addTo(group);
-
       if (result.routeGeoJSON) {
         L.geoJSON(result.routeGeoJSON, {
           style: { color: "#1a73e8", weight: 4, opacity: 0.85 },
         }).addTo(group);
       }
     }
-
     group.addTo(map);
     layerRef.current = group;
-
     return () => {
       if (layerRef.current) map.removeLayer(layerRef.current);
     };
   }, [origin, result, map]);
-
-  return (
-    <div
-      style={{
-        position: "absolute",
-        bottom: 10,
-        right: 10,
-        zIndex: 1000,
-        background: "rgba(0,0,0,0.78)",
-        color: "white",
-        padding: "10px 12px",
-        borderRadius: 6,
-        fontFamily: "Arial, sans-serif",
-        fontSize: 12,
-        maxWidth: 250,
-        lineHeight: 1.4,
-      }}
-    >
-      {mode === "idle" && (
-        <div>🖱️ Click the map to find the nearest health facility by road</div>
-      )}
-      {mode === "loading" && (
-        <div>⏳ Calculating nearest facility by road...</div>
-      )}
-      {mode === "error" && <div>⚠️ {errorMsg}</div>}
-      {mode === "done" && result && (
-        <div>
-          🏥 <strong>{result.facility.name}</strong> ({result.facility.type})
-          <br />
-          📏 {(result.distanceMeters / 1000).toFixed(2)} km · ⏱️{" "}
-          {Math.round(result.durationSeconds / 60)} min by road
-        </div>
-      )}
-      {mode !== "loading" && (
-        <button
-          onClick={handleUseMyLocation}
-          style={{
-            marginTop: 6,
-            cursor: "pointer",
-            background: "#1a73e8",
-            color: "white",
-            border: "none",
-            borderRadius: 4,
-            padding: "4px 8px",
-            fontSize: 12,
-          }}
-        >
-          📍 Use my location
-        </button>
-      )}
-    </div>
-  );
 }
 
 function ZamboangaMask() {
@@ -488,10 +458,9 @@ function ZamboangaMask() {
   return null;
 }
 
-function FloodMap() {
+function FloodMap({ onSelectionChange, onRequestLocation }) {
   const position = [7.0736, 122.01];
   const [facilities, setFacilities] = useState([]);
-
   return (
     <>
       <style>{`
@@ -513,12 +482,11 @@ function FloodMap() {
           border: none;
         }
       `}</style>
-
       <MapContainer
         center={position}
         zoom={10}
         scrollWheelZoom={true}
-        style={{ height: "100vh", width: "100%" }}
+        style={{ height: "100%", width: "100%" }}
       >
         <TileLayer
           attribution='&copy; <a href="https://stadiamaps.com/">Stadia Maps</a> &copy; <a href="https://openmaptiles.org/">OpenMapTiles</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -526,11 +494,14 @@ function FloodMap() {
         />
         <ZamboangaMask />
         <POILayer onFacilities={setFacilities} />
-        <RoutingLayer facilities={facilities} />
+        <RoutingLayer
+          facilities={facilities}
+          onSelectionChange={onSelectionChange}
+          onRequestLocation={onRequestLocation}
+        />
         <LegendControl />
       </MapContainer>
     </>
   );
 }
-
 export default FloodMap;
