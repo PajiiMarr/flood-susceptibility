@@ -1,10 +1,10 @@
 // FloodMap.jsx
 import { useEffect, useState, useRef, useCallback } from "react";
+import { supabase } from "../lib/supabaseClient";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 
-// ---------- Safe environment variable access (fixes "process is not defined") ----------
 const VITE_STADIA_KEY = import.meta.env.VITE_STADIA_KEY || "";
 
 const WORLD_RING = [
@@ -15,7 +15,6 @@ const WORLD_RING = [
   [-90, -180],
 ];
 
-// Demo FSI risk levels
 const RISK_LEVELS = {
   "Very High Risk": "#d73027",
   "High Risk": "#fc8d59",
@@ -28,16 +27,10 @@ function getRandomRiskLevel() {
   return levels[Math.floor(Math.random() * levels.length)];
 }
 
-// --------------------------------------------------------------------------
-// Routing / nearest-facility helpers
-// --------------------------------------------------------------------------
-
-// Public OSRM demo server — fine for dev/testing, but rate-limited.
-// For production, self-host OSRM or use a keyed service (OpenRouteService, Mapbox).
+// Public OSRM demo server — rate-limited; self-host or use a keyed service for production.
 const OSRM_BASE = "https://router.project-osrm.org";
 
-// Great-circle distance in meters. Used only as a cheap pre-filter — it has
-// no concept of roads, rivers, or bridges, so it's never the final answer.
+// Straight-line distance, used only as a cheap pre-filter before the road-based OSRM call.
 function haversineDistance([lat1, lon1], [lat2, lon2]) {
   const R = 6371000;
   const toRad = (deg) => (deg * Math.PI) / 180;
@@ -49,7 +42,6 @@ function haversineDistance([lat1, lon1], [lat2, lon2]) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Phase 1: cheap straight-line pre-filter, keeps the OSRM request small.
 function kNearestByHaversine(origin, facilities, k = 15) {
   return facilities
     .map((f) => ({
@@ -61,8 +53,7 @@ function kNearestByHaversine(origin, facilities, k = 15) {
     .map((r) => r.facility);
 }
 
-// Phase 2: ask OSRM for real road distances/durations from origin to each
-// candidate in a single request (one-to-many shortest path on the road graph).
+// One-to-many road distances/durations from origin to each candidate.
 async function fetchRoadDistances(origin, facilities) {
   if (facilities.length === 0) return [];
   const coordsParam = [origin, ...facilities.map((f) => [f.lat, f.lon])]
@@ -80,7 +71,7 @@ async function fetchRoadDistances(origin, facilities) {
   }));
 }
 
-// Phase 3: fetch the actual road-following geometry for the winning facility.
+// Road-following geometry for the winning facility only.
 async function fetchRoadRoute(origin, dest) {
   const url = `${OSRM_BASE}/route/v1/driving/${origin[1]},${origin[0]};${dest[1]},${dest[0]}?overview=full&geometries=geojson`;
   const res = await fetch(url);
@@ -90,10 +81,6 @@ async function fetchRoadRoute(origin, dest) {
   }
   return data.routes[0];
 }
-
-// --------------------------------------------------------------------------
-// Legend
-// --------------------------------------------------------------------------
 
 function LegendControl() {
   const map = useMap();
@@ -130,14 +117,14 @@ function LegendControl() {
   return null;
 }
 
-// --------------------------------------------------------------------------
-// POI layer — fetches health facilities and also reports them up via
-// onFacilities so the routing layer can use the same dataset.
-// --------------------------------------------------------------------------
-
-// --------------------------------------------------------------------------
-// POI layer — fetches health facilities and reports them up via onFacilities
-// --------------------------------------------------------------------------
+// Loads health facilities from Supabase and reports them up via onFacilities
+// so RoutingLayer can use the same dataset.
+const TYPE_ICONS = {
+  Pharmacy: "💊",
+  Hospital: "🏥",
+  Clinic: "🏥",
+  "Medical Office": "👨‍⚕️",
+};
 
 function POILayer({ onFacilities }) {
   const map = useMap();
@@ -151,119 +138,62 @@ function POILayer({ onFacilities }) {
     onFacilitiesRef.current = onFacilities;
   }, [onFacilities]);
 
-  const fetchWithRetry = async (url, retries = 3, delay = 1000) => {
-    for (let i = 0; i < retries; i++) {
-      try {
-        const response = await fetch(url, {
-          headers: {
-            "User-Agent":
-              "FloodMapZamboanga/1.0 (https://flood-susceptibility.vercel.app)",
-          },
-        });
-        if (response.status === 429) {
-          await new Promise((resolve) =>
-            setTimeout(resolve, delay * Math.pow(2, i)),
-          );
-          continue;
-        }
-        if (!response.ok)
-          throw new Error(`HTTP error! status: ${response.status}`);
-        const data = await response.json();
-        if (data.remark && data.remark.includes("runtime error")) {
-          throw new Error(`Overpass API error: ${data.remark}`);
-        }
-        return data;
-      } catch (err) {
-        if (i === retries - 1) throw err;
-        await new Promise((resolve) =>
-          setTimeout(resolve, delay * Math.pow(2, i)),
-        );
-      }
-    }
-  };
-
   useEffect(() => {
     let isMounted = true;
     let statusControl = null;
+
+    const addMarkersToMap = (rows) => {
+      if (!map) return;
+      if (markerLayerRef.current) map.removeLayer(markerLayerRef.current);
+      const markerGroup = L.layerGroup();
+
+      const facilitiesList = rows.map((row) => {
+        const emoji = TYPE_ICONS[row.type] || "📍";
+        const icon = L.divIcon({
+          html: `<div style="font-size:24px; text-shadow: 0 0 2px white;">${emoji}</div>`,
+          iconSize: [24, 24],
+          className: "custom-poi-marker",
+        });
+
+        const popupContent = `
+          <div style="min-width: 150px;">
+            <strong>${row.name}</strong><br>
+            Type: ${row.type}<br>
+            ${row.addr_street ? `Address: ${row.addr_street}<br>` : ""}
+            ${row.addr_city ? `City: ${row.addr_city}<br>` : ""}
+            ${row.phone ? `Phone: ${row.phone}<br>` : ""}
+            ${row.website ? `Website: <a href="${row.website}" target="_blank">link</a>` : ""}
+          </div>
+        `;
+        L.marker([row.lat, row.lon], { icon })
+          .bindPopup(popupContent)
+          .addTo(markerGroup);
+
+        return { lat: row.lat, lon: row.lon, name: row.name, type: row.type };
+      });
+
+      setPoiCount(facilitiesList.length);
+      markerGroup.addTo(map);
+      markerLayerRef.current = markerGroup;
+      onFacilitiesRef.current?.(facilitiesList);
+    };
 
     const fetchPois = async () => {
       try {
         setLoading(true);
         setError(null);
-        const cacheKey = "poi_zamboanga_health_3617877";
 
-        // In production we skip the cache to always get fresh data (optional)
-        const isProduction = import.meta.env.PROD;
-        const cached = isProduction ? null : sessionStorage.getItem(cacheKey);
+        const { data, error: queryError } = await supabase
+          .from("health_facilities")
+          .select("name, type, lat, lon, addr_street, addr_city, phone, website");
 
-        if (cached) {
-          const data = JSON.parse(cached);
-          if (isMounted) {
-            addMarkersToMap(data);
-            setLoading(false);
-          }
-          return;
-        }
-
-        // Primary query: pharmacies & hospitals
-        const overpassQuery = `
-          [out:json][timeout:60];
-          ( rel(3617877); );
-          map_to_area -> .zamboangaCityArea;
-          (
-            node["amenity"="pharmacy"](area.zamboangaCityArea);
-            node["amenity"="hospital"](area.zamboangaCityArea);
-            node["healthcare"="hospital"](area.zamboangaCityArea);
-            way["amenity"="pharmacy"](area.zamboangaCityArea);
-            way["amenity"="hospital"](area.zamboangaCityArea);
-            way["healthcare"="hospital"](area.zamboangaCityArea);
-          );
-          out body geom;
-          >;
-          out skel qt;
-        `;
-
-        const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(overpassQuery)}`;
-        let data = await fetchWithRetry(url, 3, 1000);
-
-        // If no results, try fallback (clinics & doctors)
-        if (!data.elements || data.elements.length === 0) {
-          console.log(
-            "No pharmacies/hospitals found, searching for clinics and doctors...",
-          );
-          const fallbackQuery = `
-            [out:json][timeout:60];
-            ( rel(3617877); );
-            map_to_area -> .zamboangaCityArea;
-            (
-              node["amenity"="clinic"](area.zamboangaCityArea);
-              node["amenity"="doctors"](area.zamboangaCityArea);
-              node["healthcare"="clinic"](area.zamboangaCityArea);
-              node["healthcare"="doctor"](area.zamboangaCityArea);
-              way["amenity"="clinic"](area.zamboangaCityArea);
-              way["amenity"="doctors"](area.zamboangaCityArea);
-              way["healthcare"="clinic"](area.zamboangaCityArea);
-              way["healthcare"="doctor"](area.zamboangaCityArea);
-            );
-            out body geom;
-            >;
-            out skel qt;
-          `;
-          const fallbackUrl = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(fallbackQuery)}`;
-          data = await fetchWithRetry(fallbackUrl, 3, 1000);
-        }
-
-        // Cache for future visits (only if not production)
-        if (!isProduction) {
-          sessionStorage.setItem(cacheKey, JSON.stringify(data));
-        }
+        if (queryError) throw queryError;
 
         if (isMounted) {
-          addMarkersToMap(data);
+          addMarkersToMap(data || []);
           setLoading(false);
         }
       } catch (err) {
-        console.error("POI fetch error:", err);
         if (isMounted) {
           setError(`Failed to load health facilities: ${err.message}`);
           setLoading(false);
@@ -271,128 +201,27 @@ function POILayer({ onFacilities }) {
       }
     };
 
-    const addMarkersToMap = (data) => {
-      if (!map) return;
-      if (markerLayerRef.current) map.removeLayer(markerLayerRef.current);
-      const markerGroup = L.layerGroup();
-      const elements = data.elements || [];
-      let markerCount = 0;
-      const facilitiesList = [];
-
-      const defaultIcon = L.divIcon({
-        html: `<div style="font-size:24px; text-shadow: 0 0 2px white;">📍</div>`,
-        iconSize: [24, 24],
-        className: "custom-poi-marker",
-      });
-
-      elements.forEach((el) => {
-        let lat, lon;
-        if (el.type === "node" && el.lat && el.lon) {
-          lat = el.lat;
-          lon = el.lon;
-        } else if (el.geometry && el.geometry[0]) {
-          lat = el.geometry[0].lat;
-          lon = el.geometry[0].lon;
-        } else {
-          return;
-        }
-
-        const tags = el.tags || {};
-        let icon, name, type;
-
-        if (tags.amenity === "pharmacy" || tags.healthcare === "pharmacy") {
-          icon = L.divIcon({
-            html: `<div style="font-size:24px; text-shadow: 0 0 2px white;">💊</div>`,
-            iconSize: [24, 24],
-            className: "custom-poi-marker",
-          });
-          name = tags.name || "Pharmacy";
-          type = "Pharmacy";
-        } else if (
-          tags.amenity === "hospital" ||
-          tags.healthcare === "hospital"
-        ) {
-          icon = L.divIcon({
-            html: `<div style="font-size:24px; text-shadow: 0 0 2px white;">🏥</div>`,
-            iconSize: [24, 24],
-            className: "custom-poi-marker",
-          });
-          name = tags.name || "Hospital";
-          type = "Hospital";
-        } else if (tags.amenity === "clinic" || tags.healthcare === "clinic") {
-          icon = L.divIcon({
-            html: `<div style="font-size:24px; text-shadow: 0 0 2px white;">🏥</div>`,
-            iconSize: [24, 24],
-            className: "custom-poi-marker",
-          });
-          name = tags.name || "Clinic";
-          type = "Clinic";
-        } else if (tags.amenity === "doctors" || tags.healthcare === "doctor") {
-          icon = L.divIcon({
-            html: `<div style="font-size:24px; text-shadow: 0 0 2px white;">👨‍⚕️</div>`,
-            iconSize: [24, 24],
-            className: "custom-poi-marker",
-          });
-          name = tags.name || "Doctor's Office";
-          type = "Medical Office";
-        } else {
-          icon = defaultIcon;
-          name = tags.name || "Health Facility";
-          type = tags.amenity || tags.healthcare || "Facility";
-        }
-
-        markerCount++;
-        facilitiesList.push({ lat, lon, name, type, tags });
-
-        const popupContent = `
-          <div style="min-width: 150px;">
-            <strong>${name}</strong><br>
-            Type: ${type}<br>
-            ${tags["addr:street"] ? `Address: ${tags["addr:street"]}<br>` : ""}
-            ${tags["addr:city"] ? `City: ${tags["addr:city"]}<br>` : ""}
-            ${tags.phone ? `Phone: ${tags.phone}<br>` : ""}
-            ${tags.website ? `Website: <a href="${tags.website}" target="_blank">link</a>` : ""}
-          </div>
-        `;
-        L.marker([lat, lon], { icon })
-          .bindPopup(popupContent)
-          .addTo(markerGroup);
-      });
-
-      console.log(`✅ Added ${markerCount} health facility markers`);
-      setPoiCount(markerCount);
-      markerGroup.addTo(map);
-      markerLayerRef.current = markerGroup;
-      onFacilitiesRef.current?.(facilitiesList);
-    };
-
     fetchPois();
 
-    // Status control (bottom-left)
-    if (map) {
-      statusControl = L.control({ position: "bottomleft" });
-      statusControl.onAdd = () => {
-        const div = L.DomUtil.create("div", "poi-status");
-        div.style.cssText =
-          "background:rgba(0,0,0,0.7);color:white;padding:5px 10px;border-radius:4px;font-size:12px;z-index:1000";
-        if (loading)
-          div.innerText =
-            "⏳ Loading health facilities across Zamboanga City...";
-        else if (error) div.innerText = `⚠️ ${error}`;
-        else if (poiCount === 0)
-          div.innerText =
-            "⚠️ No health facilities found. Try zooming in or check OSM data.";
-        else
-          div.innerText = `✅ ${poiCount} health facilities loaded (Zamboanga City)`;
-        return div;
-      };
-      statusControl.addTo(map);
-    }
+    // if (map) {
+    //   statusControl = L.control({ position: "bottomleft" });
+    //   statusControl.onAdd = () => {
+    //     const div = L.DomUtil.create("div", "poi-status");
+    //     div.style.cssText =
+    //       "background:rgba(0,0,0,0.7);color:white;padding:5px 10px;border-radius:4px;font-size:12px;z-index:1000";
+    //     if (loading) div.innerText = "⏳ Loading health facilities...";
+    //     else if (error) div.innerText = `⚠️ ${error}`;
+    //     else if (poiCount === 0)
+    //       div.innerText = "⚠️ No health facilities found in database.";
+    //     else div.innerText = `✅ ${poiCount} health facilities loaded (Zamboanga City)`;
+    //     return div;
+    //   };
+    //   statusControl.addTo(map);
+    // }
 
     return () => {
       isMounted = false;
-      if (markerLayerRef.current && map)
-        map.removeLayer(markerLayerRef.current);
+      if (markerLayerRef.current && map) map.removeLayer(markerLayerRef.current);
       if (statusControl && map) map.removeControl(statusControl);
     };
   }, [map, poiCount]);
@@ -400,11 +229,8 @@ function POILayer({ onFacilities }) {
   return null;
 }
 
-// --------------------------------------------------------------------------
-// Routing layer — click the map (or "use my location") to find the nearest
-// health facility BY ROAD, and draw the actual road-following route.
-// --------------------------------------------------------------------------
-
+// Click the map (or "use my location") to find the nearest health facility
+// by road and draw the road-following route.
 function RoutingLayer({ facilities }) {
   const map = useMap();
   const [mode, setMode] = useState("idle"); // idle | loading | done | error
@@ -423,10 +249,7 @@ function RoutingLayer({ facilities }) {
         }
         const origin = [latlng.lat, latlng.lng];
 
-        // Phase 1: cheap straight-line pre-filter (no network call).
         const candidates = kNearestByHaversine(origin, facilities, 15);
-
-        // Phase 2: real road distances for just those candidates.
         const ranked = await fetchRoadDistances(origin, candidates);
         const valid = ranked.filter((r) => r.distanceMeters != null);
         if (valid.length === 0)
@@ -434,7 +257,6 @@ function RoutingLayer({ facilities }) {
         valid.sort((a, b) => a.distanceMeters - b.distanceMeters);
         const best = valid[0];
 
-        // Phase 3: actual road geometry for the winner only.
         const route = await fetchRoadRoute(origin, [
           best.facility.lat,
           best.facility.lon,
@@ -443,7 +265,6 @@ function RoutingLayer({ facilities }) {
         setResult({ ...best, routeGeoJSON: route.geometry });
         setMode("done");
       } catch (err) {
-        console.error(err);
         setErrorMsg(err.message);
         setMode("error");
       }
@@ -577,10 +398,6 @@ function RoutingLayer({ facilities }) {
   );
 }
 
-// --------------------------------------------------------------------------
-// City mask + barangay risk layer
-// --------------------------------------------------------------------------
-
 function ZamboangaMask() {
   const map = useMap();
 
@@ -671,21 +488,9 @@ function ZamboangaMask() {
   return null;
 }
 
-// --------------------------------------------------------------------------
-// Main FloodMap component
-// --------------------------------------------------------------------------
-
 function FloodMap() {
   const position = [7.0736, 122.01];
   const [facilities, setFacilities] = useState([]);
-
-  // Optional: log the key for debugging (safe)
-  useEffect(() => {
-    console.log(
-      "🔑 Stadia API Key:",
-      VITE_STADIA_KEY || "❌ NOT FOUND – check .env and Vercel variables",
-    );
-  }, []);
 
   return (
     <>
