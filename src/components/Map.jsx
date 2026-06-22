@@ -3,6 +3,7 @@ import { supabase } from "../lib/supabaseClient";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
+import booleanPointInPolygon from "@turf/boolean-point-in-polygon";
 
 const VITE_STADIA_KEY = import.meta.env.VITE_STADIA_KEY || "";
 
@@ -79,10 +80,8 @@ async function fetchRoadRoute(origin, dest) {
 
 function LegendControl() {
   const map = useMap();
-
   useEffect(() => {
     const legend = L.control({ position: "topright" });
-
     legend.onAdd = () => {
       const div = L.DomUtil.create("div", "info legend");
       div.style.backgroundColor = "rgba(255,255,255,1)";
@@ -93,7 +92,6 @@ function LegendControl() {
       div.style.fontSize = "12px";
       div.style.color = "black";
       div.innerHTML = "<strong>Flood Susceptibility Index</strong><br>";
-
       for (const [level, color] of Object.entries(RISK_LEVELS)) {
         div.innerHTML += `
           <div style="display: flex; align-items: center; margin-top: 4px;">
@@ -104,11 +102,9 @@ function LegendControl() {
       }
       return div;
     };
-
     legend.addTo(map);
     return () => legend.remove();
   }, [map]);
-
   return null;
 }
 
@@ -139,7 +135,6 @@ function POILayer({ onFacilities }) {
       if (!map) return;
       if (markerLayerRef.current) map.removeLayer(markerLayerRef.current);
       const markerGroup = L.layerGroup();
-
       const facilitiesList = rows.map((row) => {
         const emoji = TYPE_ICONS[row.type] || "📍";
         const icon = L.divIcon({
@@ -147,7 +142,6 @@ function POILayer({ onFacilities }) {
           iconSize: [24, 24],
           className: "custom-poi-marker",
         });
-
         const popupContent = `
           <div style="min-width: 150px;">
             <strong>${row.name}</strong><br>
@@ -161,7 +155,6 @@ function POILayer({ onFacilities }) {
         L.marker([row.lat, row.lon], { icon })
           .bindPopup(popupContent)
           .addTo(markerGroup);
-
         return {
           lat: row.lat,
           lon: row.lon,
@@ -173,7 +166,6 @@ function POILayer({ onFacilities }) {
           website: row.website,
         };
       });
-
       setPoiCount(facilitiesList.length);
       markerGroup.addTo(map);
       markerLayerRef.current = markerGroup;
@@ -184,15 +176,12 @@ function POILayer({ onFacilities }) {
       try {
         setLoading(true);
         setError(null);
-
         const { data, error: queryError } = await supabase
           .from("health_facilities")
           .select(
             "name, type, lat, lon, addr_street, addr_city, phone, website",
           );
-
         if (queryError) throw queryError;
-
         if (isMounted) {
           addMarkersToMap(data || []);
           setLoading(false);
@@ -218,25 +207,77 @@ function POILayer({ onFacilities }) {
   return null;
 }
 
-// Distinct colors for 1st, 2nd, 3rd closest
 const ROUTE_COLORS = ["#1a73e8", "#e68a00", "#c62828"];
 
-function RoutingLayer({ facilities, onSelectionChange, onRequestLocation, filterType }) {
+function findBarangayForPoint(latlng, barangayData) {
+  if (!barangayData) return null;
+  const pt = [latlng.lng, latlng.lat];
+  const match = barangayData.features.find((feature) =>
+    booleanPointInPolygon(pt, feature),
+  );
+  if (!match) return null;
+  return {
+    name: match.properties.adm4_name,
+    risk: match.properties.fsi_risk,
+  };
+}
+
+function RoutingLayer({
+  facilities,
+  onSelectionChange,
+  onRequestLocation,
+  onRequestReset,
+  filterType,
+  cityBoundary,
+  barangayData,
+}) {
   const map = useMap();
   const [mode, setMode] = useState("idle");
   const [origin, setOrigin] = useState(null);
-  const [results, setResults] = useState([]);       // array of top facilities
+  const [results, setResults] = useState([]);
   const [errorMsg, setErrorMsg] = useState(null);
+  const [outsideBoundary, setOutsideBoundary] = useState(false);
   const layerRef = useRef(null);
 
+  // Derived value — the barangay (and its FSI risk) containing the current
+  // origin point. Recomputed from origin + barangayData, no separate state.
+  const originBarangay = origin
+    ? findBarangayForPoint(origin, barangayData)
+    : null;
+
   useEffect(() => {
-    onSelectionChange?.({ mode, results, errorMsg, origin });
-  }, [mode, results, errorMsg, origin, onSelectionChange]);
+    onSelectionChange?.({
+      mode,
+      results,
+      errorMsg,
+      origin,
+      outsideBoundary,
+      originBarangay,
+    });
+  }, [
+    mode,
+    results,
+    errorMsg,
+    origin,
+    outsideBoundary,
+    originBarangay,
+    onSelectionChange,
+  ]);
+
+  const isPointInsideBoundary = useCallback(
+    (latlng) => {
+      if (!cityBoundary) return true; // boundary not loaded yet – allow
+      const pt = [latlng.lng, latlng.lat];
+      return booleanPointInPolygon(pt, cityBoundary);
+    },
+    [cityBoundary],
+  );
 
   const runSearch = useCallback(
     async (latlng) => {
       setMode("loading");
       setErrorMsg(null);
+      setOutsideBoundary(false);
       try {
         const filtered = filterType
           ? facilities.filter((f) => f.type === filterType)
@@ -251,9 +292,7 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation, filter
         if (valid.length === 0)
           throw new Error("No reachable facility found by road");
         valid.sort((a, b) => a.distanceMeters - b.distanceMeters);
-        const top = valid.slice(0, 3); // take top 3
-
-        // Fetch routes for each top facility in parallel
+        const top = valid.slice(0, 3);
         const routes = await Promise.all(
           top.map(async (item) => {
             const route = await fetchRoadRoute(originCoords, [
@@ -261,9 +300,8 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation, filter
               item.facility.lon,
             ]);
             return { ...item, routeGeoJSON: route.geometry };
-          })
+          }),
         );
-
         setResults(routes);
         setMode("done");
       } catch (err) {
@@ -277,6 +315,13 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation, filter
   useMapEvents({
     click(e) {
       if (mode !== "loading") {
+        if (!isPointInsideBoundary(e.latlng)) {
+          setOutsideBoundary(true);
+          setOrigin(e.latlng);
+          setErrorMsg("Location is outside Zamboanga City boundary.");
+          return;
+        }
+        setOutsideBoundary(false);
         setOrigin(e.latlng);
         runSearch(e.latlng);
       }
@@ -292,6 +337,15 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation, filter
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const latlng = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        if (!isPointInsideBoundary(latlng)) {
+          setOutsideBoundary(true);
+          setOrigin(latlng);
+          setErrorMsg(
+            "Your location is outside Zamboanga City. Only locations within the city are supported.",
+          );
+          return;
+        }
+        setOutsideBoundary(false);
         setOrigin(latlng);
         runSearch(latlng);
       },
@@ -312,30 +366,33 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation, filter
       },
       { timeout: 10000, maximumAge: 60000 },
     );
-  }, [runSearch]);
+  }, [runSearch, isPointInsideBoundary]);
+
+  const resetOutsideBoundary = useCallback(() => {
+    setOutsideBoundary(false);
+  }, []);
 
   useEffect(() => {
     onRequestLocation?.(handleUseMyLocation);
   }, [handleUseMyLocation, onRequestLocation]);
 
-  // Re‑run search when filterType changes, if we already have an origin
+  useEffect(() => {
+    onRequestReset?.(resetOutsideBoundary);
+  }, [resetOutsideBoundary, onRequestReset]);
+
   useEffect(() => {
     if (origin && mode !== "loading") {
       runSearch(origin);
     }
   }, [filterType]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Draw origin and multiple routes + markers
   useEffect(() => {
     if (layerRef.current) {
       map.removeLayer(layerRef.current);
       layerRef.current = null;
     }
     if (!origin) return;
-
     const group = L.layerGroup();
-
-    // Origin marker
     L.marker(origin, {
       icon: L.divIcon({
         html: `<div style="font-size:26px;">📍</div>`,
@@ -343,12 +400,8 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation, filter
         className: "custom-poi-marker",
       }),
     }).addTo(group);
-
-    // Top facilities
     results.forEach((item, index) => {
       const color = ROUTE_COLORS[index] || "#9e9e9e";
-
-      // Facility marker with rank
       L.marker([item.facility.lat, item.facility.lon], {
         icon: L.divIcon({
           html: `<div style="font-size:20px; background:${color}; color:white; border-radius:50%; width:24px; height:24px; display:flex; align-items:center; justify-content:center; font-weight:bold; box-shadow: 0 0 4px rgba(0,0,0,0.3);">${index + 1}</div>`,
@@ -360,18 +413,14 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation, filter
           `<strong>#${index + 1} ${item.facility.name}</strong><br>${(item.distanceMeters / 1000).toFixed(2)} km, ${Math.round(item.durationSeconds / 60)} min`,
         )
         .addTo(group);
-
-      // Route line
       if (item.routeGeoJSON) {
         L.geoJSON(item.routeGeoJSON, {
           style: { color, weight: 5, opacity: 0.9 },
         }).addTo(group);
       }
     });
-
     group.addTo(map);
     layerRef.current = group;
-
     return () => {
       if (layerRef.current) map.removeLayer(layerRef.current);
     };
@@ -380,23 +429,21 @@ function RoutingLayer({ facilities, onSelectionChange, onRequestLocation, filter
   return null;
 }
 
-function ZamboangaMask() {
+function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
   const map = useMap();
-
   useEffect(() => {
     let maskLayer, borderLayer, barangayLayer;
-
     Promise.all([
       fetch("/zamboanga_city_boundary.geojson").then((r) => r.json()),
       fetch("/zamboanga_city_barangays.geojson").then((r) => r.json()),
     ]).then(([cityData, barangayData]) => {
       const feature = cityData.features[0];
+      onBoundaryLoaded?.(feature);
       const geom = feature.geometry;
       const rings =
         geom.type === "MultiPolygon"
           ? geom.coordinates.map((poly) => poly[0])
           : [geom.coordinates[0]];
-
       const maskGeoJSON = {
         type: "Feature",
         geometry: {
@@ -404,7 +451,6 @@ function ZamboangaMask() {
           coordinates: [WORLD_RING.map(([lat, lng]) => [lng, lat]), ...rings],
         },
       };
-
       maskLayer = L.geoJSON(maskGeoJSON, {
         style: {
           color: "transparent",
@@ -414,21 +460,23 @@ function ZamboangaMask() {
         },
         interactive: false,
       }).addTo(map);
-
       borderLayer = L.geoJSON(cityData, {
         style: { color: "#e8401c", weight: 2.5, opacity: 1, fill: false },
         interactive: false,
       }).addTo(map);
-
       const featuresWithRisk = barangayData.features.map((feature) => ({
         ...feature,
         properties: { ...feature.properties, fsi_risk: getRandomRiskLevel() },
       }));
-
       const updatedBarangayData = {
         ...barangayData,
         features: featuresWithRisk,
       };
+
+      // Report the risk-tagged barangay collection upward so RoutingLayer
+      // can do its own point-in-polygon lookups against the same dataset
+      // used for rendering the map fill colors.
+      onBarangaysLoaded?.(updatedBarangayData);
 
       barangayLayer = L.geoJSON(updatedBarangayData, {
         style: (feature) => {
@@ -459,20 +507,33 @@ function ZamboangaMask() {
         },
       }).addTo(map);
     });
-
     return () => {
       if (maskLayer) map.removeLayer(maskLayer);
       if (borderLayer) map.removeLayer(borderLayer);
       if (barangayLayer) map.removeLayer(barangayLayer);
     };
-  }, [map]);
-
+  }, [map, onBoundaryLoaded, onBarangaysLoaded]);
   return null;
 }
 
-function FloodMap({ onSelectionChange, onRequestLocation, filterType }) {
+function FloodMap({
+  onSelectionChange,
+  onRequestLocation,
+  onRequestReset,
+  filterType,
+}) {
   const position = [7.0736, 122.01];
   const [facilities, setFacilities] = useState([]);
+  const [cityBoundary, setCityBoundary] = useState(null);
+  const [barangayData, setBarangayData] = useState(null);
+
+  const handleBoundaryLoaded = useCallback((feature) => {
+    setCityBoundary(feature);
+  }, []);
+
+  const handleBarangaysLoaded = useCallback((data) => {
+    setBarangayData(data);
+  }, []);
 
   return (
     <>
@@ -502,16 +563,22 @@ function FloodMap({ onSelectionChange, onRequestLocation, filterType }) {
         style={{ height: "100%", width: "100%" }}
       >
         <TileLayer
-          attribution='&copy; <a href="https://stadiamaps.com/">Stadia Maps</a> &copy; <a href="https://openmaptiles.org/">OpenMapTiles</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-          url={`https://tiles.stadiamaps.com/tiles/alidade_satellite/{z}/{x}/{y}{r}.png?api_key=${VITE_STADIA_KEY}`}
+          attribution="Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community"
+          url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
         />
-        <ZamboangaMask />
+        <ZamboangaMask
+          onBoundaryLoaded={handleBoundaryLoaded}
+          onBarangaysLoaded={handleBarangaysLoaded}
+        />
         <POILayer onFacilities={setFacilities} />
         <RoutingLayer
           facilities={facilities}
           onSelectionChange={onSelectionChange}
           onRequestLocation={onRequestLocation}
+          onRequestReset={onRequestReset}
           filterType={filterType}
+          cityBoundary={cityBoundary}
+          barangayData={barangayData}
         />
         <LegendControl />
       </MapContainer>

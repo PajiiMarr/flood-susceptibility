@@ -4,10 +4,19 @@ import "./App.css";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { MapPin, MapPinOff } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
 
-// ---------- Reverse geocoding ----------
 async function reverseGeocode(lat, lng) {
   const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=16&addressdetails=1`;
   const res = await fetch(url, { headers: { "Accept-Language": "en" } });
@@ -15,24 +24,48 @@ async function reverseGeocode(lat, lng) {
   const data = await res.json();
   const addr = data.address || {};
   const specific =
-    addr.neighbourhood || addr.suburb || addr.village || addr.town || addr.city_district || addr.city;
+    addr.neighbourhood ||
+    addr.suburb ||
+    addr.village ||
+    addr.town ||
+    addr.city_district ||
+    addr.city;
   const city = addr.city || addr.town || addr.municipality;
   if (specific && city && specific !== city) return `${specific}, ${city}`;
   return data.display_name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
 }
 
-// Route colors corresponding to the map
 const ROUTE_COLORS = ["#1a73e8", "#e68a00", "#c62828"];
 
-// ---------- Main App ----------
+const FSI_MESSAGES = {
+  "Very High Risk":
+    "This area has a very high flood susceptibility. Expect severe and frequent flooding risk — prepare an evacuation plan and avoid low-lying routes during heavy rain.",
+  "High Risk":
+    "This area has a high flood susceptibility. Flooding is likely during heavy or prolonged rainfall — stay alert to local advisories.",
+  "Medium Risk":
+    "This area has a moderate flood susceptibility. Flooding is possible under sustained heavy rainfall, but less frequent than higher-risk zones.",
+  "Low Risk":
+    "This area has a low flood susceptibility. Flooding is unlikely under typical conditions, though extreme weather can still pose some risk.",
+};
+
+const FSI_COLORS = {
+  "Very High Risk": "#d73027",
+  "High Risk": "#fc8d59",
+  "Medium Risk": "#fee090",
+  "Low Risk": "#91bfdb",
+};
+
 function App() {
   const [selection, setSelection] = useState({
     mode: "idle",
-    results: [],          // array of { facility, distanceMeters, durationSeconds, routeGeoJSON }
+    results: [],
     errorMsg: null,
     origin: null,
+    outsideBoundary: false,
+    originBarangay: null,
   });
   const locationHandlerRef = useRef(null);
+  const resetHandlerRef = useRef(null);
 
   const [facilityTypes, setFacilityTypes] = useState([]);
   const [selectedType, setSelectedType] = useState(null);
@@ -55,8 +88,17 @@ function App() {
     locationHandlerRef.current = fn;
   }, []);
 
+  const handleRequestReset = useCallback((fn) => {
+    resetHandlerRef.current = fn;
+  }, []);
+
   const handleUseMyLocationClick = () => {
     locationHandlerRef.current?.();
+  };
+
+  const handleAlertClose = () => {
+    resetHandlerRef.current?.();
+    setSelection((prev) => ({ ...prev, outsideBoundary: false, mode: "idle" }));
   };
 
   return (
@@ -65,6 +107,7 @@ function App() {
         <FloodMap
           onSelectionChange={setSelection}
           onRequestLocation={handleRequestLocation}
+          onRequestReset={handleRequestReset}
           filterType={selectedType}
         />
       </div>
@@ -77,11 +120,30 @@ function App() {
           onTypeChange={setSelectedType}
         />
       </div>
+
+      <AlertDialog
+        open={selection.outsideBoundary}
+        onOpenChange={(open) => {
+          if (!open) handleAlertClose();
+        }}
+      >
+        <AlertDialogContent className="z-[9999]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Outside Zamboanga City</AlertDialogTitle>
+            <AlertDialogDescription>
+              {selection.errorMsg ||
+                "Please select a location within the city boundary."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={handleAlertClose}>OK</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
 
-// ---------- Right Panel ----------
 function FacilityDetailsPanel({
   selection,
   onUseMyLocation,
@@ -89,11 +151,10 @@ function FacilityDetailsPanel({
   selectedType,
   onTypeChange,
 }) {
-  const { mode, results, errorMsg, origin } = selection;
+  const { mode, results, errorMsg, origin, originBarangay } = selection;
 
   return (
     <div className="space-y-4">
-      {/* Type filter */}
       {facilityTypes.length > 0 && (
         <Card>
           <CardContent className="p-3">
@@ -145,7 +206,8 @@ function FacilityDetailsPanel({
       {mode === "idle" && (
         <Card className="border-dashed bg-muted/50">
           <CardContent className="p-4 text-center text-sm text-muted-foreground">
-            Click the map or use your location to find the nearest health facilities.
+            Click the map or use your location to find the nearest health
+            facilities.
           </CardContent>
         </Card>
       )}
@@ -162,6 +224,7 @@ function FacilityDetailsPanel({
 
       {mode === "done" && results.length > 0 && (
         <div className="space-y-4">
+          <FsiNotice originBarangay={originBarangay} />
           <OriginCard origin={origin} />
           {results.map((item, index) => (
             <FacilityCard
@@ -176,7 +239,6 @@ function FacilityDetailsPanel({
   );
 }
 
-// ---------- Skeleton for top 3 facilities ----------
 function SkeletonFacilityDetails() {
   return (
     <div className="space-y-4">
@@ -213,7 +275,6 @@ function SkeletonFacilityDetails() {
   );
 }
 
-// ---------- Origin location card ----------
 function OriginCard({ origin }) {
   const [placeName, setPlaceName] = useState(null);
   const [loadingName, setLoadingName] = useState(false);
@@ -228,11 +289,20 @@ function OriginCard({ origin }) {
     setPlaceName(null);
 
     reverseGeocode(origin.lat, origin.lng)
-      .then((name) => { if (!cancelled) setPlaceName(name); })
-      .catch(() => { if (!cancelled) setPlaceName(`${origin.lat.toFixed(5)}, ${origin.lng.toFixed(5)}`); })
-      .finally(() => { if (!cancelled) setLoadingName(false); });
+      .then((name) => {
+        if (!cancelled) setPlaceName(name);
+      })
+      .catch(() => {
+        if (!cancelled)
+          setPlaceName(`${origin.lat.toFixed(5)}, ${origin.lng.toFixed(5)}`);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingName(false);
+      });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [origin]);
 
   return (
@@ -252,14 +322,35 @@ function OriginCard({ origin }) {
   );
 }
 
-// ---------- Single facility card ----------
+function FsiNotice({ originBarangay }) {
+  if (!originBarangay) return null;
+  const { name, risk } = originBarangay;
+  const color = FSI_COLORS[risk] || "#9e9e9e";
+  const message =
+    FSI_MESSAGES[risk] || "Flood susceptibility data unavailable for this area.";
+
+  return (
+    <Alert style={{ borderColor: color }} className="border-l-4">
+      <AlertTitle className="flex items-center justify-between">
+        <span>Flood Susceptibility — Barangay {name}</span>
+        <span
+          className="text-xs font-bold px-2 py-0.5 rounded-full text-white text-center"
+          style={{ backgroundColor: color }}
+        >
+          {risk}
+        </span>
+      </AlertTitle>
+      <AlertDescription>{message}</AlertDescription>
+    </Alert>
+  );
+}
+
 function FacilityCard({ item, rank }) {
   const { facility, distanceMeters, durationSeconds } = item;
   const color = ROUTE_COLORS[rank - 1] || "#9e9e9e";
 
   return (
     <Card className="relative">
-      {/* Colored rank indicator */}
       <div
         className="absolute top-0 left-0 w-1 h-full rounded-l-lg"
         style={{ backgroundColor: color }}
@@ -279,16 +370,22 @@ function FacilityCard({ item, rank }) {
       <CardContent className="space-y-2 text-sm pl-5">
         <div className="flex justify-between border-b pb-2">
           <span className="text-muted-foreground">Distance</span>
-          <span className="font-medium">{(distanceMeters / 1000).toFixed(2)} km</span>
+          <span className="font-medium">
+            {(distanceMeters / 1000).toFixed(2)} km
+          </span>
         </div>
         <div className="flex justify-between border-b pb-2">
           <span className="text-muted-foreground">Travel time</span>
-          <span className="font-medium">{Math.round(durationSeconds / 60)} min</span>
+          <span className="font-medium">
+            {Math.round(durationSeconds / 60)} min
+          </span>
         </div>
         {facility.addr_street && (
           <div className="flex justify-between border-b pb-2">
             <span className="text-muted-foreground">Address</span>
-            <span className="font-medium text-right">{facility.addr_street}</span>
+            <span className="font-medium text-right">
+              {facility.addr_street}
+            </span>
           </div>
         )}
         {facility.phone && (
