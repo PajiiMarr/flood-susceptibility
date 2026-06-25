@@ -239,8 +239,6 @@ function RoutingLayer({
   const [outsideBoundary, setOutsideBoundary] = useState(false);
   const layerRef = useRef(null);
 
-  // Derived value — the barangay (and its FSI risk) containing the current
-  // origin point. Recomputed from origin + barangayData, no separate state.
   const originBarangay = origin
     ? findBarangayForPoint(origin, barangayData)
     : null;
@@ -266,7 +264,7 @@ function RoutingLayer({
 
   const isPointInsideBoundary = useCallback(
     (latlng) => {
-      if (!cityBoundary) return true; // boundary not loaded yet – allow
+      if (!cityBoundary) return true;
       const pt = [latlng.lng, latlng.lat];
       return booleanPointInPolygon(pt, cityBoundary);
     },
@@ -386,13 +384,17 @@ function RoutingLayer({
     }
   }, [filterType]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // -------------- Draw routes AND auto-zoom --------------
   useEffect(() => {
     if (layerRef.current) {
       map.removeLayer(layerRef.current);
       layerRef.current = null;
     }
     if (!origin) return;
+
     const group = L.layerGroup();
+
+    // Origin marker
     L.marker(origin, {
       icon: L.divIcon({
         html: `<div style="font-size:26px;">📍</div>`,
@@ -400,9 +402,18 @@ function RoutingLayer({
         className: "custom-poi-marker",
       }),
     }).addTo(group);
+
+    // Prepare bounds for auto-zoom
+    const bounds = L.latLngBounds([origin.lat, origin.lng]);
+
+    // Facility routes
     results.forEach((item, index) => {
       const color = ROUTE_COLORS[index] || "#9e9e9e";
-      L.marker([item.facility.lat, item.facility.lon], {
+
+      const facilityLatLng = [item.facility.lat, item.facility.lon];
+      bounds.extend(facilityLatLng); // include in bounds
+
+      L.marker(facilityLatLng, {
         icon: L.divIcon({
           html: `<div style="font-size:20px; background:${color}; color:white; border-radius:50%; width:24px; height:24px; display:flex; align-items:center; justify-content:center; font-weight:bold; box-shadow: 0 0 4px rgba(0,0,0,0.3);">${index + 1}</div>`,
           iconSize: [24, 24],
@@ -413,14 +424,25 @@ function RoutingLayer({
           `<strong>#${index + 1} ${item.facility.name}</strong><br>${(item.distanceMeters / 1000).toFixed(2)} km, ${Math.round(item.durationSeconds / 60)} min`,
         )
         .addTo(group);
+
       if (item.routeGeoJSON) {
         L.geoJSON(item.routeGeoJSON, {
           style: { color, weight: 5, opacity: 0.9 },
         }).addTo(group);
       }
     });
+
     group.addTo(map);
     layerRef.current = group;
+
+    // Auto-zoom to fit all markers (with padding)
+    if (results.length > 0) {
+      map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
+    } else {
+      // If no results, just center on origin with a reasonable zoom
+      map.setView([origin.lat, origin.lng], 14);
+    }
+
     return () => {
       if (layerRef.current) map.removeLayer(layerRef.current);
     };
@@ -472,10 +494,6 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
         ...barangayData,
         features: featuresWithRisk,
       };
-
-      // Report the risk-tagged barangay collection upward so RoutingLayer
-      // can do its own point-in-polygon lookups against the same dataset
-      // used for rendering the map fill colors.
       onBarangaysLoaded?.(updatedBarangayData);
 
       barangayLayer = L.geoJSON(updatedBarangayData, {
