@@ -1,12 +1,18 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import {
+  useEffect,
+  useState,
+  useRef,
+  useCallback,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
 import { supabase } from "../lib/supabaseClient";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import booleanPointInPolygon from "@turf/boolean-point-in-polygon";
-
-const VITE_STADIA_KEY = import.meta.env.VITE_STADIA_KEY || "";
-
+import * as XLSX from "xlsx";
+// ----- Constants & helpers -----
 const WORLD_RING = [
   [-90, -180],
   [90, -180],
@@ -14,21 +20,21 @@ const WORLD_RING = [
   [-90, 180],
   [-90, -180],
 ];
-
 const RISK_LEVELS = {
   "Very High Risk": "#d73027",
   "High Risk": "#fc8d59",
   "Medium Risk": "#fee090",
   "Low Risk": "#91bfdb",
 };
-
 function getRandomRiskLevel() {
   const levels = Object.keys(RISK_LEVELS);
   return levels[Math.floor(Math.random() * levels.length)];
 }
-
 const OSRM_BASE = "https://router.project-osrm.org";
-
+const NOMINATIM_BASE = "https://nominatim.openstreetmap.org";
+const DEFAULT_VIEWBOX = "121.85,7.30,122.20,6.85";
+const POPULATION_XLSX_URL =
+  "https://xflhynxdadwlrloxiogv.supabase.co/storage/v1/object/public/fsi-bucket/SOCIO%20DEMOGRAPHIC%20DATAS/Region-IX_0.xlsx";
 function haversineDistance([lat1, lon1], [lat2, lon2]) {
   const R = 6371000;
   const toRad = (deg) => (deg * Math.PI) / 180;
@@ -39,7 +45,6 @@ function haversineDistance([lat1, lon1], [lat2, lon2]) {
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
-
 function kNearestByHaversine(origin, facilities, k = 15) {
   return facilities
     .map((f) => ({
@@ -50,7 +55,6 @@ function kNearestByHaversine(origin, facilities, k = 15) {
     .slice(0, k)
     .map((r) => r.facility);
 }
-
 async function fetchRoadDistances(origin, facilities) {
   if (facilities.length === 0) return [];
   const coordsParam = [origin, ...facilities.map((f) => [f.lat, f.lon])]
@@ -67,7 +71,6 @@ async function fetchRoadDistances(origin, facilities) {
     durationSeconds: data.durations[0][i + 1],
   }));
 }
-
 async function fetchRoadRoute(origin, dest) {
   const url = `${OSRM_BASE}/route/v1/driving/${origin[1]},${origin[0]};${dest[1]},${dest[0]}?overview=full&geometries=geojson`;
   const res = await fetch(url);
@@ -77,7 +80,77 @@ async function fetchRoadRoute(origin, dest) {
   }
   return data.routes[0];
 }
-
+function getBoundingBox(feature) {
+  if (!feature?.geometry?.coordinates) return null;
+  let minLon = Infinity,
+    minLat = Infinity,
+    maxLon = -Infinity,
+    maxLat = -Infinity;
+  const walk = (coords) => {
+    if (typeof coords[0] === "number") {
+      const [lon, lat] = coords;
+      if (lon < minLon) minLon = lon;
+      if (lon > maxLon) maxLon = lon;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+      return;
+    }
+    coords.forEach(walk);
+  };
+  walk(feature.geometry.coordinates);
+  return [minLon, minLat, maxLon, maxLat];
+}
+// ----- Barangay population loading (PSA xlsx in Supabase storage) -----
+const ROMAN_TO_ARABIC = { i: "1", ii: "2", iii: "3", iv: "4", v: "5" };
+// Normalizes a barangay name for matching between the PSA spreadsheet and
+// the geojson (strips accents, expands "Sto./Sta.", roman numerals, punctuation).
+function normalizeBarangayName(raw) {
+  let n = raw.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  n = n.toLowerCase();
+  n = n.replace(/\bsto\.?\b/g, "santo").replace(/\bsta\.?\b/g, "santa");
+  n = n.replace(/\bbrgy\.?\b/g, "").replace(/\bbarangay\b/g, "");
+  n = n.replace(/[^a-z0-9\s]/g, " ");
+  n = n.replace(/\s+/g, " ").trim();
+  n = n.replace(/\b(i|ii|iii|iv|v)\b/g, (m) => ROMAN_TO_ARABIC[m] || m);
+  return n;
+}
+// A name can match under a few different forms (full name, name without a
+// parenthetical suffix) — build every key we're willing to match on.
+function buildNameKeys(raw) {
+  const keys = new Set();
+  keys.add(normalizeBarangayName(raw));
+  const base = raw.replace(/\(.*?\)/g, "").trim();
+  if (base && base !== raw) keys.add(normalizeBarangayName(base));
+  return keys;
+}
+async function fetchBarangayPopulations() {
+  try {
+    const res = await fetch(POPULATION_XLSX_URL);
+    if (!res.ok) throw new Error(`Population fetch failed: ${res.status}`);
+    const buffer = await res.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: "array" });
+    const sheetName =
+      workbook.SheetNames.find((n) => /city of zamboanga/i.test(n)) || null;
+    if (!sheetName) throw new Error('"City of Zamboanga" sheet not found');
+    const sheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
+    const popMap = new Map();
+    for (const row of rows) {
+      const name = row[1];
+      const population = row[3];
+      if (typeof name !== "string" || typeof population !== "number") continue;
+      if (name.trim().toUpperCase() === "CITY OF ZAMBOANGA") continue; // citywide total row
+      for (const key of buildNameKeys(name)) {
+        if (!popMap.has(key)) popMap.set(key, population);
+      }
+    }
+    return popMap;
+  } catch (err) {
+    console.warn("Barangay population load failed:", err.message);
+    return new Map();
+  }
+}
+// ----- LegendControl (leaflet) -----
 function LegendControl() {
   const map = useMap();
   useEffect(() => {
@@ -107,14 +180,167 @@ function LegendControl() {
   }, [map]);
   return null;
 }
-
+// ----- SidebarSearch – exported for use in App -----
+export function SidebarSearch({ onSelectLocation, cityBoundary }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [showResults, setShowResults] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const debounceTimerRef = useRef(null);
+  const containerRef = useRef(null);
+  const onSelectRef = useRef(onSelectLocation);
+  const boundaryRef = useRef(cityBoundary);
+  useEffect(() => {
+    onSelectRef.current = onSelectLocation;
+  }, [onSelectLocation]);
+  useEffect(() => {
+    boundaryRef.current = cityBoundary;
+  }, [cityBoundary]);
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setShowResults(false);
+      }
+    };
+    document.addEventListener("click", handleClickOutside);
+    return () => document.removeEventListener("click", handleClickOutside);
+  }, []);
+  const doSearch = useCallback(async (searchQuery) => {
+    if (!searchQuery || searchQuery.trim().length < 3) {
+      setResults([]);
+      setShowResults(false);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setShowResults(true);
+    try {
+      const bbox = getBoundingBox(boundaryRef.current);
+      const viewbox = bbox
+        ? `${bbox[0]},${bbox[3]},${bbox[2]},${bbox[1]}`
+        : DEFAULT_VIEWBOX;
+      const url =
+        `${NOMINATIM_BASE}/search?format=json&limit=6&countrycodes=ph` +
+        `&viewbox=${viewbox}&bounded=1` +
+        `&q=${encodeURIComponent(`${searchQuery}, Zamboanga City, Philippines`)}`;
+      const res = await fetch(url, { headers: { "Accept-Language": "en" } });
+      const data = await res.json();
+      setResults(data || []);
+      setShowResults(true);
+    } catch (err) {
+      setResults([]);
+      setShowResults(true);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  const handleInputChange = (e) => {
+    const value = e.target.value;
+    setQuery(value);
+    clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(() => doSearch(value), 400);
+  };
+  const handleSelect = (item) => {
+    setQuery(item.display_name);
+    setResults([]);
+    setShowResults(false);
+    onSelectRef.current?.({
+      lat: parseFloat(item.lat),
+      lng: parseFloat(item.lon),
+    });
+  };
+  return (
+    <div
+      ref={containerRef}
+      className="sidebar-search"
+      style={{
+        width: "100%",
+        background: "white",
+        borderRadius: "4px",
+        boxShadow: "0 2px 6px rgba(0,0,0,0.3)",
+        padding: "8px",
+        position: "relative",
+        zIndex: 1000,
+      }}
+    >
+      <input
+        type="text"
+        className="search-input"
+        placeholder="Search a place in Zamboanga City..."
+        value={query}
+        onChange={handleInputChange}
+        onFocus={() => {
+          if (results.length > 0) setShowResults(true);
+        }}
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          padding: "8px 10px",
+          border: "none",
+          borderRadius: "4px",
+          fontSize: "13px",
+          fontFamily: "Arial, sans-serif",
+          outline: "none",
+          background: "white",
+        }}
+      />
+      {showResults && (
+        <div
+          className="search-results"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            right: 0,
+            background: "white",
+            borderRadius: "4px",
+            boxShadow: "0 2px 6px rgba(0,0,0,0.3)",
+            maxHeight: "240px",
+            overflowY: "auto",
+            zIndex: 1001,
+          }}
+        >
+          {loading ? (
+            <div className="search-status" style={{ padding: "8px 10px", color: "#777" }}>
+              Searching...
+            </div>
+          ) : results.length === 0 ? (
+            <div className="search-status" style={{ padding: "8px 10px", color: "#777" }}>
+              No results found
+            </div>
+          ) : (
+            results.map((item, idx) => (
+              <div
+                key={idx}
+                className="search-item"
+                onClick={() => handleSelect(item)}
+                style={{
+                  padding: "8px 10px",
+                  fontSize: "12px",
+                  fontFamily: "Arial, sans-serif",
+                  color: "#222",
+                  cursor: "pointer",
+                  borderBottom: "1px solid #eee",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#f2f2f2")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "white")}
+              >
+                {item.display_name}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+// ----- POILayer -----
 const TYPE_ICONS = {
   Pharmacy: "💊",
   Hospital: "🏥",
   Clinic: "🏥",
   "Medical Office": "👨‍⚕️",
 };
-
 function POILayer({ onFacilities }) {
   const map = useMap();
   const [loading, setLoading] = useState(true);
@@ -122,15 +348,12 @@ function POILayer({ onFacilities }) {
   const [poiCount, setPoiCount] = useState(null);
   const markerLayerRef = useRef(null);
   const onFacilitiesRef = useRef(onFacilities);
-
   useEffect(() => {
     onFacilitiesRef.current = onFacilities;
   }, [onFacilities]);
-
   useEffect(() => {
     let isMounted = true;
     let statusControl = null;
-
     const addMarkersToMap = (rows) => {
       if (!map) return;
       if (markerLayerRef.current) map.removeLayer(markerLayerRef.current);
@@ -171,7 +394,6 @@ function POILayer({ onFacilities }) {
       markerLayerRef.current = markerGroup;
       onFacilitiesRef.current?.(facilitiesList);
     };
-
     const fetchPois = async () => {
       try {
         setLoading(true);
@@ -179,7 +401,7 @@ function POILayer({ onFacilities }) {
         const { data, error: queryError } = await supabase
           .from("health_facilities")
           .select(
-            "name, type, lat, lon, addr_street, addr_city, phone, website",
+            "name, type, lat, lon, addr_street, addr_city, phone, website"
           );
         if (queryError) throw queryError;
         if (isMounted) {
@@ -193,9 +415,7 @@ function POILayer({ onFacilities }) {
         }
       }
     };
-
     fetchPois();
-
     return () => {
       isMounted = false;
       if (markerLayerRef.current && map)
@@ -203,30 +423,29 @@ function POILayer({ onFacilities }) {
       if (statusControl && map) map.removeControl(statusControl);
     };
   }, [map, poiCount]);
-
   return null;
 }
-
+// ----- RoutingLayer -----
 const ROUTE_COLORS = ["#1a73e8", "#e68a00", "#c62828"];
-
 function findBarangayForPoint(latlng, barangayData) {
   if (!barangayData) return null;
   const pt = [latlng.lng, latlng.lat];
   const match = barangayData.features.find((feature) =>
-    booleanPointInPolygon(pt, feature),
+    booleanPointInPolygon(pt, feature)
   );
   if (!match) return null;
   return {
     name: match.properties.adm4_name,
     risk: match.properties.fsi_risk,
+    population: match.properties.population ?? null,
   };
 }
-
 function RoutingLayer({
   facilities,
   onSelectionChange,
   onRequestLocation,
   onRequestReset,
+  onRequestSearchSelect,
   filterType,
   cityBoundary,
   barangayData,
@@ -238,11 +457,9 @@ function RoutingLayer({
   const [errorMsg, setErrorMsg] = useState(null);
   const [outsideBoundary, setOutsideBoundary] = useState(false);
   const layerRef = useRef(null);
-
   const originBarangay = origin
     ? findBarangayForPoint(origin, barangayData)
     : null;
-
   useEffect(() => {
     onSelectionChange?.({
       mode,
@@ -261,16 +478,14 @@ function RoutingLayer({
     originBarangay,
     onSelectionChange,
   ]);
-
   const isPointInsideBoundary = useCallback(
     (latlng) => {
       if (!cityBoundary) return true;
       const pt = [latlng.lng, latlng.lat];
       return booleanPointInPolygon(pt, cityBoundary);
     },
-    [cityBoundary],
+    [cityBoundary]
   );
-
   const runSearch = useCallback(
     async (latlng) => {
       setMode("loading");
@@ -298,7 +513,7 @@ function RoutingLayer({
               item.facility.lon,
             ]);
             return { ...item, routeGeoJSON: route.geometry };
-          }),
+          })
         );
         setResults(routes);
         setMode("done");
@@ -307,25 +522,28 @@ function RoutingLayer({
         setMode("error");
       }
     },
-    [facilities, filterType],
+    [facilities, filterType]
   );
-
+  const handleNewOrigin = useCallback(
+    (latlng) => {
+      if (mode === "loading") return;
+      if (!isPointInsideBoundary(latlng)) {
+        setOutsideBoundary(true);
+        setOrigin(latlng);
+        setErrorMsg("Location is outside Zamboanga City boundary.");
+        return;
+      }
+      setOutsideBoundary(false);
+      setOrigin(latlng);
+      runSearch(latlng);
+    },
+    [mode, isPointInsideBoundary, runSearch]
+  );
   useMapEvents({
     click(e) {
-      if (mode !== "loading") {
-        if (!isPointInsideBoundary(e.latlng)) {
-          setOutsideBoundary(true);
-          setOrigin(e.latlng);
-          setErrorMsg("Location is outside Zamboanga City boundary.");
-          return;
-        }
-        setOutsideBoundary(false);
-        setOrigin(e.latlng);
-        runSearch(e.latlng);
-      }
+      handleNewOrigin(e.latlng);
     },
   });
-
   const handleUseMyLocation = useCallback(() => {
     if (!navigator.geolocation) {
       setErrorMsg("Geolocation not supported by this browser");
@@ -334,18 +552,10 @@ function RoutingLayer({
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        const latlng = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        if (!isPointInsideBoundary(latlng)) {
-          setOutsideBoundary(true);
-          setOrigin(latlng);
-          setErrorMsg(
-            "Your location is outside Zamboanga City. Only locations within the city are supported.",
-          );
-          return;
-        }
-        setOutsideBoundary(false);
-        setOrigin(latlng);
-        runSearch(latlng);
+        handleNewOrigin({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+        });
       },
       (err) => {
         let message = err.message;
@@ -362,39 +572,34 @@ function RoutingLayer({
         setErrorMsg(message);
         setMode("error");
       },
-      { timeout: 10000, maximumAge: 60000 },
+      { timeout: 10000, maximumAge: 60000 }
     );
-  }, [runSearch, isPointInsideBoundary]);
-
+  }, [handleNewOrigin]);
   const resetOutsideBoundary = useCallback(() => {
     setOutsideBoundary(false);
   }, []);
-
   useEffect(() => {
     onRequestLocation?.(handleUseMyLocation);
   }, [handleUseMyLocation, onRequestLocation]);
-
   useEffect(() => {
     onRequestReset?.(resetOutsideBoundary);
   }, [resetOutsideBoundary, onRequestReset]);
-
+  useEffect(() => {
+    onRequestSearchSelect?.(handleNewOrigin);
+  }, [handleNewOrigin, onRequestSearchSelect]);
   useEffect(() => {
     if (origin && mode !== "loading") {
       runSearch(origin);
     }
   }, [filterType]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // -------------- Draw routes AND auto-zoom --------------
+  // Draw routes and markers
   useEffect(() => {
     if (layerRef.current) {
       map.removeLayer(layerRef.current);
       layerRef.current = null;
     }
     if (!origin) return;
-
     const group = L.layerGroup();
-
-    // Origin marker
     L.marker(origin, {
       icon: L.divIcon({
         html: `<div style="font-size:26px;">📍</div>`,
@@ -402,17 +607,11 @@ function RoutingLayer({
         className: "custom-poi-marker",
       }),
     }).addTo(group);
-
-    // Prepare bounds for auto-zoom
     const bounds = L.latLngBounds([origin.lat, origin.lng]);
-
-    // Facility routes
     results.forEach((item, index) => {
       const color = ROUTE_COLORS[index] || "#9e9e9e";
-
       const facilityLatLng = [item.facility.lat, item.facility.lon];
-      bounds.extend(facilityLatLng); // include in bounds
-
+      bounds.extend(facilityLatLng);
       L.marker(facilityLatLng, {
         icon: L.divIcon({
           html: `<div style="font-size:20px; background:${color}; color:white; border-radius:50%; width:24px; height:24px; display:flex; align-items:center; justify-content:center; font-weight:bold; box-shadow: 0 0 4px rgba(0,0,0,0.3);">${index + 1}</div>`,
@@ -421,36 +620,29 @@ function RoutingLayer({
         }),
       })
         .bindPopup(
-          `<strong>#${index + 1} ${item.facility.name}</strong><br>${(item.distanceMeters / 1000).toFixed(2)} km, ${Math.round(item.durationSeconds / 60)} min`,
+          `<strong>#${index + 1} ${item.facility.name}</strong><br>${(item.distanceMeters / 1000).toFixed(2)} km, ${Math.round(item.durationSeconds / 60)} min`
         )
         .addTo(group);
-
       if (item.routeGeoJSON) {
         L.geoJSON(item.routeGeoJSON, {
           style: { color, weight: 5, opacity: 0.9 },
         }).addTo(group);
       }
     });
-
     group.addTo(map);
     layerRef.current = group;
-
-    // Auto-zoom to fit all markers (with padding)
     if (results.length > 0) {
       map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
     } else {
-      // If no results, just center on origin with a reasonable zoom
       map.setView([origin.lat, origin.lng], 14);
     }
-
     return () => {
       if (layerRef.current) map.removeLayer(layerRef.current);
     };
   }, [origin, results, map]);
-
   return null;
 }
-
+// ----- ZamboangaMask (boundary, barangay & population layers) -----
 function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
   const map = useMap();
   useEffect(() => {
@@ -458,7 +650,8 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
     Promise.all([
       fetch("/zamboanga_city_boundary.geojson").then((r) => r.json()),
       fetch("/zamboanga_city_barangays.geojson").then((r) => r.json()),
-    ]).then(([cityData, barangayData]) => {
+      fetchBarangayPopulations(),
+    ]).then(([cityData, barangayData, popMap]) => {
       const feature = cityData.features[0];
       onBoundaryLoaded?.(feature);
       const geom = feature.geometry;
@@ -486,16 +679,36 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
         style: { color: "#e8401c", weight: 2.5, opacity: 1, fill: false },
         interactive: false,
       }).addTo(map);
-      const featuresWithRisk = barangayData.features.map((feature) => ({
-        ...feature,
-        properties: { ...feature.properties, fsi_risk: getRandomRiskLevel() },
-      }));
+      let unmatchedCount = 0;
+      const featuresWithRisk = barangayData.features.map((feature) => {
+        const barangayName = feature.properties.adm4_name || "";
+        let population = null;
+        for (const key of buildNameKeys(barangayName)) {
+          if (popMap.has(key)) {
+            population = popMap.get(key);
+            break;
+          }
+        }
+        if (population == null) unmatchedCount += 1;
+        return {
+          ...feature,
+          properties: {
+            ...feature.properties,
+            fsi_risk: getRandomRiskLevel(),
+            population,
+          },
+        };
+      });
+      if (unmatchedCount > 0) {
+        console.warn(
+          `Population data: ${unmatchedCount} barangay(s) had no match in the PSA spreadsheet — check for name spelling differences.`
+        );
+      }
       const updatedBarangayData = {
         ...barangayData,
         features: featuresWithRisk,
       };
       onBarangaysLoaded?.(updatedBarangayData);
-
       barangayLayer = L.geoJSON(updatedBarangayData, {
         style: (feature) => {
           const risk = feature?.properties?.fsi_risk || "Low Risk";
@@ -511,11 +724,19 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
         onEachFeature: (feature, layer) => {
           const name = feature.properties.adm4_name;
           const risk = feature.properties.fsi_risk;
-          layer.bindTooltip(`${name}<br><strong>FSI: ${risk}</strong>`, {
-            permanent: false,
-            direction: "center",
-            className: "barangay-label",
-          });
+          const population = feature.properties.population;
+          const populationLine =
+            population != null
+              ? `Population: ${population.toLocaleString()}`
+              : "Population: N/A";
+          layer.bindTooltip(
+            `${name}<br><strong>FSI: ${risk}</strong><br>${populationLine}`,
+            {
+              permanent: false,
+              direction: "center",
+              className: "barangay-label",
+            }
+          );
           layer.on("mouseover", function () {
             this.setStyle({ fillOpacity: 0.6, weight: 2 });
           });
@@ -533,28 +754,49 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
   }, [map, onBoundaryLoaded, onBarangaysLoaded]);
   return null;
 }
-
-function FloodMap({
-  onSelectionChange,
-  onRequestLocation,
-  onRequestReset,
-  filterType,
-}) {
+// ----- FloodMap (exported as default) -----
+const FloodMap = forwardRef(function FloodMap(
+  {
+    onSelectionChange,
+    onRequestLocation,
+    onRequestReset,
+    filterType,
+    onCityBoundaryLoaded,
+  },
+  ref
+) {
   const position = [7.0736, 122.01];
   const [facilities, setFacilities] = useState([]);
   const [cityBoundary, setCityBoundary] = useState(null);
   const [barangayData, setBarangayData] = useState(null);
-
-  const handleBoundaryLoaded = useCallback((feature) => {
-    setCityBoundary(feature);
-  }, []);
-
+  const searchSelectRef = useRef(null);
+  const handleBoundaryLoaded = useCallback(
+    (feature) => {
+      setCityBoundary(feature);
+      onCityBoundaryLoaded?.(feature);
+    },
+    [onCityBoundaryLoaded]
+  );
   const handleBarangaysLoaded = useCallback((data) => {
     setBarangayData(data);
   }, []);
-
+  const handleRequestSearchSelect = useCallback((fn) => {
+    searchSelectRef.current = fn;
+  }, []);
+  // Expose a method to the parent via ref
+  useImperativeHandle(ref, () => ({
+    searchLocation: (latlng) => {
+      searchSelectRef.current?.(latlng);
+    },
+  }));
+  const handleSelectionChange = useCallback(
+    (data) => {
+      onSelectionChange?.(data);
+    },
+    [onSelectionChange]
+  );
   return (
-    <>
+    <div style={{ position: "relative", height: "100%", width: "100%" }}>
       <style>{`
         .barangay-label {
           background: rgba(0,0,0,0.7);
@@ -572,6 +814,12 @@ function FloodMap({
         .custom-poi-icon {
           background: none;
           border: none;
+        }
+        .search-item:last-child {
+          border-bottom: none;
+        }
+        .search-item:hover {
+          background: #f2f2f2;
         }
       `}</style>
       <MapContainer
@@ -591,17 +839,17 @@ function FloodMap({
         <POILayer onFacilities={setFacilities} />
         <RoutingLayer
           facilities={facilities}
-          onSelectionChange={onSelectionChange}
+          onSelectionChange={handleSelectionChange}
           onRequestLocation={onRequestLocation}
           onRequestReset={onRequestReset}
+          onRequestSearchSelect={handleRequestSearchSelect}
           filterType={filterType}
           cityBoundary={cityBoundary}
           barangayData={barangayData}
         />
         <LegendControl />
       </MapContainer>
-    </>
+    </div>
   );
-}
-
+});
 export default FloodMap;

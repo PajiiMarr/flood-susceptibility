@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import FloodMap from "./components/Map";
+import FloodMap, { SidebarSearch } from "./components/Map";
 import "./App.css";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
@@ -14,9 +14,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { MapPin, MapPinOff } from "lucide-react";
+import { MapPin, MapPinOff, Users } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
-
+// ----- Reverse geocoding helper -----
 async function reverseGeocode(lat, lng) {
   const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=16&addressdetails=1`;
   const res = await fetch(url, { headers: { "Accept-Language": "en" } });
@@ -34,9 +34,8 @@ async function reverseGeocode(lat, lng) {
   if (specific && city && specific !== city) return `${specific}, ${city}`;
   return data.display_name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
 }
-
+// ----- Constants for UI -----
 const ROUTE_COLORS = ["#1a73e8", "#e68a00", "#c62828"];
-
 const FSI_MESSAGES = {
   "Very High Risk":
     "This area has a very high flood susceptibility. Expect severe and frequent flooding risk — prepare an evacuation plan and avoid low-lying routes during heavy rain.",
@@ -47,14 +46,13 @@ const FSI_MESSAGES = {
   "Low Risk":
     "This area has a low flood susceptibility. Flooding is unlikely under typical conditions, though extreme weather can still pose some risk.",
 };
-
 const FSI_COLORS = {
   "Very High Risk": "#d73027",
   "High Risk": "#fc8d59",
   "Medium Risk": "#fee090",
   "Low Risk": "#91bfdb",
 };
-
+// ----- Main App -----
 function App() {
   const [selection, setSelection] = useState({
     mode: "idle",
@@ -66,10 +64,11 @@ function App() {
   });
   const locationHandlerRef = useRef(null);
   const resetHandlerRef = useRef(null);
-
+  const mapRef = useRef(null);
   const [facilityTypes, setFacilityTypes] = useState([]);
   const [selectedType, setSelectedType] = useState(null);
-
+  const [cityBoundary, setCityBoundary] = useState(null); // for search biasing
+  // Load facility types from Supabase
   useEffect(() => {
     supabase
       .from("health_facilities")
@@ -83,32 +82,39 @@ function App() {
         }
       });
   }, []);
-
+  // Callbacks from the map
   const handleRequestLocation = useCallback((fn) => {
     locationHandlerRef.current = fn;
   }, []);
-
   const handleRequestReset = useCallback((fn) => {
     resetHandlerRef.current = fn;
   }, []);
-
   const handleUseMyLocationClick = () => {
     locationHandlerRef.current?.();
   };
-
   const handleAlertClose = () => {
     resetHandlerRef.current?.();
     setSelection((prev) => ({ ...prev, outsideBoundary: false, mode: "idle" }));
   };
-
+  const handleCityBoundaryLoaded = useCallback((boundary) => {
+    setCityBoundary(boundary);
+  }, []);
+  // When a search result is selected, tell the map to use that location
+  const handleSearchSelect = useCallback((latlng) => {
+    if (mapRef.current) {
+      mapRef.current.searchLocation(latlng);
+    }
+  }, []);
   return (
     <div className="flex w-full h-screen">
       <div className="w-3/4 h-full">
         <FloodMap
+          ref={mapRef}
           onSelectionChange={setSelection}
           onRequestLocation={handleRequestLocation}
           onRequestReset={handleRequestReset}
           filterType={selectedType}
+          onCityBoundaryLoaded={handleCityBoundaryLoaded}
         />
       </div>
       <div className="w-1/4 h-full bg-background p-6 overflow-y-auto border-l">
@@ -118,9 +124,10 @@ function App() {
           facilityTypes={facilityTypes}
           selectedType={selectedType}
           onTypeChange={setSelectedType}
+          cityBoundary={cityBoundary}
+          onSearchSelect={handleSearchSelect}
         />
       </div>
-
       <AlertDialog
         open={selection.outsideBoundary}
         onOpenChange={(open) => {
@@ -143,18 +150,42 @@ function App() {
     </div>
   );
 }
-
+// ----- Right sidebar panel -----
 function FacilityDetailsPanel({
   selection,
   onUseMyLocation,
   facilityTypes,
   selectedType,
   onTypeChange,
+  cityBoundary,
+  onSearchSelect,
 }) {
   const { mode, results, errorMsg, origin, originBarangay } = selection;
-
   return (
     <div className="space-y-4">
+      {/* Search bar – now in the sidebar */}
+      <SidebarSearch
+        cityBoundary={cityBoundary}
+        onSelectLocation={onSearchSelect}
+      />
+      <Button
+        onClick={onUseMyLocation}
+        disabled={mode === "loading"}
+        className="w-full"
+        size="sm"
+      >
+        {mode === "loading" ? (
+          <>
+            <MapPinOff className="mr-2 h-4 w-4 animate-pulse" />
+            Searching…
+          </>
+        ) : (
+          <>
+            <MapPin className="mr-2 h-4 w-4" />
+            Use my location
+          </>
+        )}
+      </Button>
       {facilityTypes.length > 0 && (
         <Card>
           <CardContent className="p-3">
@@ -184,25 +215,6 @@ function FacilityDetailsPanel({
         </Card>
       )}
 
-      <Button
-        onClick={onUseMyLocation}
-        disabled={mode === "loading"}
-        className="w-full"
-        size="sm"
-      >
-        {mode === "loading" ? (
-          <>
-            <MapPinOff className="mr-2 h-4 w-4 animate-pulse" />
-            Searching…
-          </>
-        ) : (
-          <>
-            <MapPin className="mr-2 h-4 w-4" />
-            Use my location
-          </>
-        )}
-      </Button>
-
       {mode === "idle" && (
         <Card className="border-dashed bg-muted/50">
           <CardContent className="p-4 text-center text-sm text-muted-foreground">
@@ -211,9 +223,7 @@ function FacilityDetailsPanel({
           </CardContent>
         </Card>
       )}
-
       {mode === "loading" && <SkeletonFacilityDetails />}
-
       {mode === "error" && (
         <Card className="border-destructive/50 bg-destructive/5">
           <CardContent className="p-4 text-sm text-destructive">
@@ -221,7 +231,6 @@ function FacilityDetailsPanel({
           </CardContent>
         </Card>
       )}
-
       {mode === "done" && results.length > 0 && (
         <div className="space-y-4">
           <FsiNotice originBarangay={originBarangay} />
@@ -238,7 +247,7 @@ function FacilityDetailsPanel({
     </div>
   );
 }
-
+// ----- Skeleton loader -----
 function SkeletonFacilityDetails() {
   return (
     <div className="space-y-4">
@@ -274,11 +283,10 @@ function SkeletonFacilityDetails() {
     </div>
   );
 }
-
+// ----- Origin card with reverse geocoding -----
 function OriginCard({ origin }) {
   const [placeName, setPlaceName] = useState(null);
   const [loadingName, setLoadingName] = useState(false);
-
   useEffect(() => {
     if (!origin) {
       setPlaceName(null);
@@ -287,7 +295,6 @@ function OriginCard({ origin }) {
     let cancelled = false;
     setLoadingName(true);
     setPlaceName(null);
-
     reverseGeocode(origin.lat, origin.lng)
       .then((name) => {
         if (!cancelled) setPlaceName(name);
@@ -299,12 +306,10 @@ function OriginCard({ origin }) {
       .finally(() => {
         if (!cancelled) setLoadingName(false);
       });
-
     return () => {
       cancelled = true;
     };
   }, [origin]);
-
   return (
     <Card>
       <CardContent className="p-4 flex gap-3 items-center">
@@ -321,14 +326,13 @@ function OriginCard({ origin }) {
     </Card>
   );
 }
-
+// ----- Flood risk notice -----
 function FsiNotice({ originBarangay }) {
   if (!originBarangay) return null;
-  const { name, risk } = originBarangay;
+  const { name, risk, population } = originBarangay;
   const color = FSI_COLORS[risk] || "#9e9e9e";
   const message =
     FSI_MESSAGES[risk] || "Flood susceptibility data unavailable for this area.";
-
   return (
     <Alert style={{ borderColor: color }} className="border-l-4">
       <AlertTitle className="flex items-center justify-between">
@@ -340,15 +344,21 @@ function FsiNotice({ originBarangay }) {
           {risk}
         </span>
       </AlertTitle>
-      <AlertDescription>{message}</AlertDescription>
+      <AlertDescription>
+        {message}
+        <div className="mt-2 flex items-center gap-1.5 text-sm font-medium text-foreground">
+          <Users className="h-3.5 w-3.5" />
+          Population:{" "}
+          {population != null ? population.toLocaleString() : "N/A"}
+        </div>
+      </AlertDescription>
     </Alert>
   );
 }
-
+// ----- Facility card -----
 function FacilityCard({ item, rank }) {
   const { facility, distanceMeters, durationSeconds } = item;
   const color = ROUTE_COLORS[rank - 1] || "#9e9e9e";
-
   return (
     <Card className="relative">
       <div
@@ -411,5 +421,4 @@ function FacilityCard({ item, rank }) {
     </Card>
   );
 }
-
 export default App;
