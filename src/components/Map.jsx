@@ -38,7 +38,10 @@ function getRandomRiskLevel() {
 
 const OSRM_BASE = "https://router.project-osrm.org";
 const NOMINATIM_BASE = "https://nominatim.openstreetmap.org";
+const OVERPASS_BASE = "https://overpass-api.de/api/interpreter";
 const DEFAULT_VIEWBOX = "121.85,7.30,122.20,6.85";
+const MARITIME_BOUNDARY_CACHE_KEY = "zc_maritime_boundary_v1";
+const MARITIME_BOUNDARY_CACHE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const POPULATION_XLSX_URL =
   "https://xflhynxdadwlrloxiogv.supabase.co/storage/v1/object/public/fsi-bucket/SOCIO%20DEMOGRAPHIC%20DATAS/Region-IX_0.xlsx";
 
@@ -112,11 +115,6 @@ function getBoundingBox(feature) {
   return [minLon, minLat, maxLon, maxLat];
 }
 
-const ZAMBOANGA_BOUNDS = [
-  [6.85, 121.85], // southwest [lat, lng]
-  [7.3, 122.2], // northeast [lat, lng]
-];
-
 const ROMAN_TO_ARABIC = { i: "1", ii: "2", iii: "3", iv: "4", v: "5" };
 
 function normalizeBarangayName(raw) {
@@ -163,6 +161,81 @@ async function fetchBarangayPopulations() {
   } catch (err) {
     console.warn("Barangay population load failed:", err.message);
     return new Map();
+  }
+}
+
+// Fetches Zamboanga City's official OSM administrative boundary relation
+// and extracts only the segments that AREN'T tagged natural=coastline —
+// those are the "imaginary" straight lines OSM draws out into the sea to
+// mark the extent of the city's municipal waters (per R.A. 8550, 15km from
+// the coastline). The land/coastline portion is already covered by our
+// local boundary geojson, so we only need these sea-crossing segments.
+async function fetchZamboangaMaritimeBoundary() {
+  try {
+    const cached = localStorage.getItem(MARITIME_BOUNDARY_CACHE_KEY);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (
+        parsed?.fetchedAt &&
+        Date.now() - parsed.fetchedAt < MARITIME_BOUNDARY_CACHE_MS &&
+        parsed.geojson
+      ) {
+        return parsed.geojson;
+      }
+    }
+  } catch {
+    // corrupt cache entry — ignore and refetch
+  }
+
+  try {
+    const query = `
+      [out:json][timeout:60];
+      relation["type"="boundary"]["boundary"="administrative"]["admin_level"="6"]["name"="Zamboanga City"]->.city;
+      way(r.city);
+      out tags geom;
+    `;
+    const res = await fetch(OVERPASS_BASE, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "data=" + encodeURIComponent(query),
+    });
+    if (!res.ok) throw new Error(`Overpass request failed: ${res.status}`);
+    const data = await res.json();
+    const ways = data.elements || [];
+
+    const seaWays = ways.filter(
+      (w) =>
+        w.type === "way" &&
+        Array.isArray(w.geometry) &&
+        w.geometry.length > 1 &&
+        w.tags?.natural !== "coastline",
+    );
+
+    const geojson = {
+      type: "FeatureCollection",
+      features: seaWays.map((w) => ({
+        type: "Feature",
+        properties: {},
+        geometry: {
+          type: "LineString",
+          coordinates: w.geometry.map((pt) => [pt.lon, pt.lat]),
+        },
+      })),
+    };
+
+    try {
+      localStorage.setItem(
+        MARITIME_BOUNDARY_CACHE_KEY,
+        JSON.stringify({ fetchedAt: Date.now(), geojson }),
+      );
+    } catch {
+      // storage full/unavailable — not critical, just skip caching
+    }
+
+    return geojson;
+  } catch (err) {
+    console.warn("Maritime boundary load failed:", err.message);
+    return { type: "FeatureCollection", features: [] };
   }
 }
 
@@ -224,7 +297,6 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
       locateBtn.style.cssText = `
         background: none;
         border: none;
-        cursor: pointer;
         padding: 8px 10px;
         display: flex;
         align-items: center;
@@ -256,7 +328,6 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
       centerBtn.style.cssText = `
         background: none;
         border: none;
-        cursor: pointer;
         padding: 8px 10px;
         display: flex;
         align-items: center;
@@ -293,7 +364,6 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
       clearBtn.style.cssText = `
         background: none;
         border: none;
-        cursor: pointer;
         padding: 8px 10px;
         display: flex;
         align-items: center;
@@ -349,7 +419,6 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
       zoomInBtn.style.cssText = `
         background: none;
         border: none;
-        cursor: pointer;
         padding: 6px 10px;
         display: flex;
         align-items: center;
@@ -379,7 +448,6 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
       zoomOutBtn.style.cssText = `
         background: none;
         border: none;
-        cursor: pointer;
         padding: 6px 10px;
         display: flex;
         align-items: center;
@@ -570,7 +638,6 @@ export function SidebarSearch({ onSelectLocation, cityBoundary }) {
                   fontSize: "12px",
                   fontFamily: "Arial, sans-serif",
                   color: "#222",
-                  cursor: "pointer",
                   borderBottom: "1px solid #eee",
                 }}
                 onMouseEnter={(e) =>
@@ -835,6 +902,8 @@ function RoutingLayer({
   onRequestLocation,
   onRequestReset,
   onRequestSearchSelect,
+  onRequestClear,
+  onRequestCenter,
   filterType,
   cityBoundary,
   barangayData,
@@ -962,6 +1031,7 @@ function RoutingLayer({
 
   const centerLocation = useCallback(() => {
     if (origin) {
+      // Center on origin with appropriate zoom
       map.setView([origin.lat, origin.lng], 14);
     }
   }, [origin, map]);
@@ -1022,6 +1092,14 @@ function RoutingLayer({
   }, [handleNewOrigin, onRequestSearchSelect]);
 
   useEffect(() => {
+    onRequestClear?.(clearLocation);
+  }, [clearLocation, onRequestClear]);
+
+  useEffect(() => {
+    onRequestCenter?.(centerLocation);
+  }, [centerLocation, onRequestCenter]);
+
+  useEffect(() => {
     if (origin && mode !== "loading") {
       runSearch(origin);
     }
@@ -1050,7 +1128,19 @@ function RoutingLayer({
       }),
     }).addTo(group);
 
-    const bounds = L.latLngBounds([origin.lat, origin.lng]);
+    // Create bounds that include both the origin marker and every nearby
+    // facility marker. IMPORTANT: L.latLngBounds(corner1, corner2) needs
+    // two corners. Passing a single [lat, lng] array as corner1 with no
+    // corner2 makes Leaflet iterate over that array's *elements*
+    // (origin.lat, origin.lng) as if each were its own LatLng, which are
+    // just bare numbers and get silently dropped — so the bounds ends up
+    // built only from the facility markers and the pin gets clipped out
+    // of the fitBounds zoom. Passing the same point twice as both
+    // corners avoids that.
+    const bounds = L.latLngBounds(
+      [origin.lat, origin.lng],
+      [origin.lat, origin.lng],
+    );
 
     results.forEach((item, index) => {
       const color = ROUTE_COLORS[index] || "#9e9e9e";
@@ -1079,8 +1169,14 @@ function RoutingLayer({
     group.addTo(map);
     layerRef.current = group;
 
+    // Always fit bounds to show both origin and facilities
     if (results.length > 0) {
-      map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
+      map.fitBounds(bounds, { 
+        padding: [50, 50], 
+        maxZoom: 15,
+        animate: true,
+        duration: 0.5
+      });
     } else {
       map.setView([origin.lat, origin.lng], 14);
     }
@@ -1097,13 +1193,14 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
   const map = useMap();
 
   useEffect(() => {
-    let maskLayer, borderLayer, barangayLayer;
+    let maskLayer, borderLayer, barangayLayer, maritimeLayer;
 
     Promise.all([
       fetch("/zamboanga_city_boundary.geojson").then((r) => r.json()),
       fetch("/zamboanga_city_barangays.geojson").then((r) => r.json()),
       fetchBarangayPopulations(),
-    ]).then(([cityData, barangayData, popMap]) => {
+      fetchZamboangaMaritimeBoundary(),
+    ]).then(([cityData, barangayData, popMap, maritimeGeoJSON]) => {
       const feature = cityData.features[0];
       onBoundaryLoaded?.(feature);
 
@@ -1135,6 +1232,18 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
         style: { color: "#e8401c", weight: 2.5, opacity: 1, fill: false },
         interactive: false,
       }).addTo(map);
+
+      if (maritimeGeoJSON?.features?.length) {
+        maritimeLayer = L.geoJSON(maritimeGeoJSON, {
+          style: {
+            color: "#3388ff",
+            weight: 1.5,
+            opacity: 0.85,
+            dashArray: "6, 6",
+          },
+          interactive: false,
+        }).addTo(map);
+      }
 
       let unmatchedCount = 0;
       const featuresWithRisk = barangayData.features.map((feature) => {
@@ -1287,6 +1396,7 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
       if (maskLayer) map.removeLayer(maskLayer);
       if (borderLayer) map.removeLayer(borderLayer);
       if (barangayLayer) map.removeLayer(barangayLayer);
+      if (maritimeLayer) map.removeLayer(maritimeLayer);
     };
   }, [map, onBoundaryLoaded, onBarangaysLoaded]);
 
@@ -1406,10 +1516,13 @@ const FloodMap = forwardRef(function FloodMap(
     [onSelectionChange],
   );
 
-  // Set up refs for clear and center functions
-  const handleRoutingLayerMount = useCallback((clearFn, centerFn) => {
-    clearLocationRef.current = clearFn;
-    centerLocationRef.current = centerFn;
+  // Set up refs for clear and center functions, populated by RoutingLayer
+  const handleRequestClear = useCallback((fn) => {
+    clearLocationRef.current = fn;
+  }, []);
+
+  const handleRequestCenter = useCallback((fn) => {
+    centerLocationRef.current = fn;
   }, []);
 
   return (
@@ -1472,9 +1585,7 @@ const FloodMap = forwardRef(function FloodMap(
       <MapContainer
         center={position}
         zoom={10}
-        minZoom={10}
-        maxBounds={ZAMBOANGA_BOUNDS}
-        maxBoundsViscosity={1.0}
+        minZoom={3}
         scrollWheelZoom={true}
         style={{ height: "100%", width: "100%" }}
       >
@@ -1496,6 +1607,8 @@ const FloodMap = forwardRef(function FloodMap(
           onRequestLocation={onRequestLocation}
           onRequestReset={onRequestReset}
           onRequestSearchSelect={handleRequestSearchSelect}
+          onRequestClear={handleRequestClear}
+          onRequestCenter={handleRequestCenter}
           filterType={filterType}
           cityBoundary={cityBoundary}
           barangayData={barangayData}

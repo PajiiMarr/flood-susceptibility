@@ -14,7 +14,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { MapPin, MapPinOff, Users } from "lucide-react";
+import { MapPin, MapPinOff, Users, Waves } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
 // ----- Reverse geocoding helper -----
 async function reverseGeocode(lat, lng) {
@@ -61,6 +61,7 @@ function App() {
     origin: null,
     outsideBoundary: false,
     originBarangay: null,
+    errorType: null,
   });
   const locationHandlerRef = useRef(null);
   const resetHandlerRef = useRef(null);
@@ -94,7 +95,7 @@ function App() {
   };
   const handleAlertClose = () => {
     resetHandlerRef.current?.();
-    setSelection((prev) => ({ ...prev, outsideBoundary: false, mode: "idle" }));
+    setSelection((prev) => ({ ...prev, outsideBoundary: false, mode: "idle", errorType: null }));
   };
   const handleCityBoundaryLoaded = useCallback((boundary) => {
     setCityBoundary(boundary);
@@ -136,10 +137,20 @@ function App() {
       >
         <AlertDialogContent className="z-[9999]">
           <AlertDialogHeader>
-            <AlertDialogTitle>Outside Zamboanga City</AlertDialogTitle>
+            <AlertDialogTitle>
+              {selection.errorType === "seawater" ? "Seawater Location" : "Outside Zamboanga City"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              {selection.errorMsg ||
-                "Please select a location within the city boundary."}
+              {selection.errorType === "seawater" ? (
+                <div className="flex items-center gap-2">
+                  <Waves className="h-5 w-5 text-blue-500" />
+                  <span>
+                    This location appears to be in the seawater. Please select a location on land within Zamboanga City to find nearby health facilities.
+                  </span>
+                </div>
+              ) : (
+                selection.errorMsg || "Please select a location within the city boundary."
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -160,7 +171,7 @@ function FacilityDetailsPanel({
   cityBoundary,
   onSearchSelect,
 }) {
-  const { mode, results, errorMsg, origin, originBarangay } = selection;
+  const { mode, results, errorMsg, origin, originBarangay, errorType } = selection;
   return (
     <div className="space-y-4">
       {/* Search bar – now in the sidebar */}
