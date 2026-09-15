@@ -16,6 +16,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { MapPin, MapPinOff, Users, Waves } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
+
+// ----- Constant: the pseudo-type used to route to evacuation centers -----
+// Kept local to App.jsx so it doesn't need to be imported from Map.jsx.
+// The same literal string must be used inside Map.jsx's RoutingLayer so
+// that `filterType === "Evacuation Center"` triggers evac-center routing.
+const EVACUATION_CENTER_TYPE = "Evacuation Center";
+
 // ----- Reverse geocoding helper -----
 async function reverseGeocode(lat, lng) {
   const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=16&addressdetails=1`;
@@ -34,8 +41,10 @@ async function reverseGeocode(lat, lng) {
   if (specific && city && specific !== city) return `${specific}, ${city}`;
   return data.display_name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
 }
+
 // ----- Constants for UI -----
 const ROUTE_COLORS = ["#1a73e8", "#e68a00", "#c62828"];
+
 const FSI_MESSAGES = {
   "Very High Risk":
     "This area has a very high flood susceptibility. Expect severe and frequent flooding risk — prepare an evacuation plan and avoid low-lying routes during heavy rain.",
@@ -46,12 +55,14 @@ const FSI_MESSAGES = {
   "Low Risk":
     "This area has a low flood susceptibility. Flooding is unlikely under typical conditions, though extreme weather can still pose some risk.",
 };
+
 const FSI_COLORS = {
   "Very High Risk": "#d73027",
   "High Risk": "#fc8d59",
   "Medium Risk": "#fee090",
   "Low Risk": "#91bfdb",
 };
+
 // ----- Main App -----
 function App() {
   const [selection, setSelection] = useState({
@@ -69,43 +80,61 @@ function App() {
   const [facilityTypes, setFacilityTypes] = useState([]);
   const [selectedType, setSelectedType] = useState(null);
   const [cityBoundary, setCityBoundary] = useState(null); // for search biasing
-  // Load facility types from Supabase
+
+  // Load health-facility types from Supabase, then append "Evacuation Center"
+  // so it always shows up as a selectable facility type in the sidebar.
   useEffect(() => {
     supabase
       .from("health_facilities")
       .select("type")
       .then(({ data, error }) => {
-        if (!error && data) {
-          const types = [...new Set(data.map((item) => item.type))]
-            .filter(Boolean)
-            .sort();
-          setFacilityTypes(types);
-        }
+        const healthTypes =
+          !error && data
+            ? data.map((item) => item.type).filter(Boolean)
+            : [];
+        const sortedHealth = [...new Set(healthTypes)]
+          .filter(Boolean)
+          .sort();
+        // Health types stay alphabetical; evac center is appended at the end
+        // so it visually stands apart from the health-facility types.
+        setFacilityTypes([...sortedHealth, EVACUATION_CENTER_TYPE]);
       });
   }, []);
+
   // Callbacks from the map
   const handleRequestLocation = useCallback((fn) => {
     locationHandlerRef.current = fn;
   }, []);
+
   const handleRequestReset = useCallback((fn) => {
     resetHandlerRef.current = fn;
   }, []);
+
   const handleUseMyLocationClick = () => {
     locationHandlerRef.current?.();
   };
+
   const handleAlertClose = () => {
     resetHandlerRef.current?.();
-    setSelection((prev) => ({ ...prev, outsideBoundary: false, mode: "idle", errorType: null }));
+    setSelection((prev) => ({
+      ...prev,
+      outsideBoundary: false,
+      mode: "idle",
+      errorType: null,
+    }));
   };
+
   const handleCityBoundaryLoaded = useCallback((boundary) => {
     setCityBoundary(boundary);
   }, []);
+
   // When a search result is selected, tell the map to use that location
   const handleSearchSelect = useCallback((latlng) => {
     if (mapRef.current) {
       mapRef.current.searchLocation(latlng);
     }
   }, []);
+
   return (
     <div className="flex w-full h-screen">
       <div className="w-3/4 h-full">
@@ -129,6 +158,7 @@ function App() {
           onSearchSelect={handleSearchSelect}
         />
       </div>
+
       <AlertDialog
         open={selection.outsideBoundary}
         onOpenChange={(open) => {
@@ -138,18 +168,23 @@ function App() {
         <AlertDialogContent className="z-[9999]">
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {selection.errorType === "seawater" ? "Seawater Location" : "Outside Zamboanga City"}
+              {selection.errorType === "seawater"
+                ? "Seawater Location"
+                : "Outside Zamboanga City"}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {selection.errorType === "seawater" ? (
                 <div className="flex items-center gap-2">
                   <Waves className="h-5 w-5 text-blue-500" />
                   <span>
-                    This location appears to be in the seawater. Please select a location on land within Zamboanga City to find nearby health facilities.
+                    This location appears to be in the seawater. Please select a
+                    location on land within Zamboanga City to find nearby
+                    facilities.
                   </span>
                 </div>
               ) : (
-                selection.errorMsg || "Please select a location within the city boundary."
+                selection.errorMsg ||
+                "Please select a location within the city boundary."
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -161,6 +196,7 @@ function App() {
     </div>
   );
 }
+
 // ----- Right sidebar panel -----
 function FacilityDetailsPanel({
   selection,
@@ -171,7 +207,8 @@ function FacilityDetailsPanel({
   cityBoundary,
   onSearchSelect,
 }) {
-  const { mode, results, errorMsg, origin, originBarangay, errorType } = selection;
+  const { mode, results, errorMsg, origin, originBarangay } = selection;
+
   return (
     <div className="space-y-4">
       {/* Search bar – now in the sidebar */}
@@ -179,6 +216,7 @@ function FacilityDetailsPanel({
         cityBoundary={cityBoundary}
         onSelectLocation={onSearchSelect}
       />
+
       <Button
         onClick={onUseMyLocation}
         disabled={mode === "loading"}
@@ -197,6 +235,7 @@ function FacilityDetailsPanel({
           </>
         )}
       </Button>
+
       {facilityTypes.length > 0 && (
         <Card>
           <CardContent className="p-3">
@@ -230,7 +269,7 @@ function FacilityDetailsPanel({
         <Card className="border-dashed bg-muted/50">
           <CardContent className="p-4 text-center text-sm text-muted-foreground">
             Click the map or use your location to find the nearest health
-            facilities.
+            facilities or evacuation centers.
           </CardContent>
         </Card>
       )}
@@ -248,7 +287,10 @@ function FacilityDetailsPanel({
           <OriginCard origin={origin} />
           {results.map((item, index) => (
             <FacilityCard
-              key={item.facility.name + item.facility.lat}
+              key={
+                (item.facility._evac?.id ?? item.facility.name) +
+                item.facility.lat
+              }
               item={item}
               rank={index + 1}
             />
@@ -258,6 +300,7 @@ function FacilityDetailsPanel({
     </div>
   );
 }
+
 // ----- Skeleton loader -----
 function SkeletonFacilityDetails() {
   return (
@@ -294,10 +337,12 @@ function SkeletonFacilityDetails() {
     </div>
   );
 }
+
 // ----- Origin card with reverse geocoding -----
 function OriginCard({ origin }) {
   const [placeName, setPlaceName] = useState(null);
   const [loadingName, setLoadingName] = useState(false);
+
   useEffect(() => {
     if (!origin) {
       setPlaceName(null);
@@ -321,6 +366,7 @@ function OriginCard({ origin }) {
       cancelled = true;
     };
   }, [origin]);
+
   return (
     <Card>
       <CardContent className="p-4 flex gap-3 items-center">
@@ -337,6 +383,7 @@ function OriginCard({ origin }) {
     </Card>
   );
 }
+
 // ----- Flood risk notice -----
 function FsiNotice({ originBarangay }) {
   if (!originBarangay) return null;
@@ -366,10 +413,18 @@ function FsiNotice({ originBarangay }) {
     </Alert>
   );
 }
+
 // ----- Facility card -----
+// Works for both health facilities and evacuation centers. Evac-center
+// results carry a `_evac` payload on `facility` (set by RoutingLayer in
+// Map.jsx) that we surface here as additional rows.
 function FacilityCard({ item, rank }) {
   const { facility, distanceMeters, durationSeconds } = item;
   const color = ROUTE_COLORS[rank - 1] || "#9e9e9e";
+
+  const evac = facility._evac;
+  const isEvac = Boolean(evac) || facility.type === EVACUATION_CENTER_TYPE;
+
   return (
     <Card className="relative">
       <div
@@ -386,7 +441,9 @@ function FacilityCard({ item, rank }) {
             #{rank}
           </span>
         </div>
-        <p className="text-sm text-muted-foreground">{facility.type}</p>
+        <p className="text-sm text-muted-foreground">
+          {isEvac ? "⛺ Evacuation Center" : facility.type}
+        </p>
       </CardHeader>
       <CardContent className="space-y-2 text-sm pl-5">
         <div className="flex justify-between border-b pb-2">
@@ -401,35 +458,80 @@ function FacilityCard({ item, rank }) {
             {Math.round(durationSeconds / 60)} min
           </span>
         </div>
-        {facility.addr_street && (
-          <div className="flex justify-between border-b pb-2">
-            <span className="text-muted-foreground">Address</span>
-            <span className="font-medium text-right">
-              {facility.addr_street}
-            </span>
-          </div>
-        )}
-        {facility.phone && (
-          <div className="flex justify-between border-b pb-2">
-            <span className="text-muted-foreground">Phone</span>
-            <span className="font-medium">{facility.phone}</span>
-          </div>
-        )}
-        {facility.website && (
-          <div className="flex justify-between border-b pb-2">
-            <span className="text-muted-foreground">Website</span>
-            <a
-              href={facility.website}
-              target="_blank"
-              rel="noreferrer"
-              className="font-medium underline text-primary"
-            >
-              Visit
-            </a>
-          </div>
+
+        {isEvac ? (
+          <>
+            {evac?.location && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Location</span>
+                <span className="font-medium text-right">{evac.location}</span>
+              </div>
+            )}
+            {evac?.district && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">District</span>
+                <span className="font-medium text-right">{evac.district}</span>
+              </div>
+            )}
+            {evac?.floor_area_sqm != null && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Floor area</span>
+                <span className="font-medium text-right">
+                  {evac.floor_area_sqm} sqm
+                </span>
+              </div>
+            )}
+            {evac?.proximity && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Proximity</span>
+                <span className="font-medium text-right">
+                  {evac.proximity}
+                </span>
+              </div>
+            )}
+            {evac?.remarks && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Remarks</span>
+                <span className="font-medium text-right text-amber-600">
+                  {evac.remarks}
+                </span>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {facility.addr_street && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Address</span>
+                <span className="font-medium text-right">
+                  {facility.addr_street}
+                </span>
+              </div>
+            )}
+            {facility.phone && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Phone</span>
+                <span className="font-medium">{facility.phone}</span>
+              </div>
+            )}
+            {facility.website && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Website</span>
+                <a
+                  href={facility.website}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium underline text-primary"
+                >
+                  Visit
+                </a>
+              </div>
+            )}
+          </>
         )}
       </CardContent>
     </Card>
   );
 }
+
 export default App;

@@ -15,6 +15,12 @@ import * as XLSX from "xlsx";
 import "leaflet.markercluster/dist/MarkerCluster.css";
 import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 import MarkerClusterGroup from "leaflet.markercluster";
+import * as geotiff from "geotiff";
+import proj4 from "proj4";
+
+// Pseudo facility-type used to route to evacuation centers. Must match the
+// string used in App.jsx (`EVACUATION_CENTER_TYPE`).
+export const EVACUATION_CENTER_TYPE = "Evacuation Center";
 
 const WORLD_RING = [
   [-90, -180],
@@ -41,9 +47,215 @@ const NOMINATIM_BASE = "https://nominatim.openstreetmap.org";
 const OVERPASS_BASE = "https://overpass-api.de/api/interpreter";
 const DEFAULT_VIEWBOX = "121.85,7.30,122.20,6.85";
 const MARITIME_BOUNDARY_CACHE_KEY = "zc_maritime_boundary_v1";
-const MARITIME_BOUNDARY_CACHE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const MARITIME_BOUNDARY_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
 const POPULATION_XLSX_URL =
   "https://xflhynxdadwlrloxiogv.supabase.co/storage/v1/object/public/fsi-bucket/SOCIO%20DEMOGRAPHIC%20DATAS/Region-IX_0.xlsx";
+
+const TILE_SERVER_BASE =
+  import.meta.env.VITE_TILE_SERVER_URL || "http://localhost:4001";
+
+function buildTilePath(relativePath) {
+  const encoded = relativePath
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return `${TILE_SERVER_BASE}/${encoded}`;
+}
+
+// ---------------------------------------------------------------------------
+// UTM Zone 51N (EPSG:32651) -> WGS84 (EPSG:4326) conversion.
+// ---------------------------------------------------------------------------
+proj4.defs("EPSG:32651", "+proj=utm +zone=51 +datum=WGS84 +units=m +no_defs");
+
+function utmToLatLng(easting, northing) {
+  const [lng, lat] = proj4("EPSG:32651", "EPSG:4326", [easting, northing]);
+  return { lat, lng };
+}
+
+function projectRingToPixels(ring, bbox, width, height) {
+  const [west, south, east, north] = bbox;
+  return ring.map(([lng, lat]) => {
+    const [x, y] = proj4("EPSG:4326", "EPSG:32651", [lng, lat]);
+    const col = ((x - west) / (east - west)) * width;
+    const row = ((north - y) / (north - south)) * height;
+    return [col, row];
+  });
+}
+
+function getClipRingsFromBoundary(boundaryFeature, bbox, width, height) {
+  if (!boundaryFeature?.geometry) return [];
+  const geom = boundaryFeature.geometry;
+  const polygons =
+    geom.type === "MultiPolygon" ? geom.coordinates : [geom.coordinates];
+  const rings = [];
+  polygons.forEach((polygon) => {
+    polygon.forEach((ring) => {
+      rings.push(projectRingToPixels(ring, bbox, width, height));
+    });
+  });
+  return rings;
+}
+
+function getRasterValueAtLatLng(latlng, info) {
+  const { values, width, height, bbox, noDataValue } = info;
+  const [west, south, east, north] = bbox;
+  const [x, y] = proj4("EPSG:4326", "EPSG:32651", [latlng.lng, latlng.lat]);
+  if (x < west || x > east || y < south || y > north) return null;
+  const col = Math.floor(((x - west) / (east - west)) * width);
+  const row = Math.floor(((north - y) / (north - south)) * height);
+  if (col < 0 || col >= width || row < 0 || row >= height) return null;
+  const idx = row * width + col;
+  const value = values[idx];
+  if (value == null || Number.isNaN(value)) return null;
+  if (noDataValue != null && value === noDataValue) return null;
+  return value;
+}
+
+const QGIS_LAYER_CONFIGS = {
+  dem: {
+    name: "Digital Elevation Model",
+    path: buildTilePath(
+      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_DEM.tif",
+    ),
+    colorScale: "terrain",
+    opacity: 0.8,
+    previewColor: "#4CAF50",
+    description: "Terrain elevation data",
+    unit: " m",
+  },
+  dem_filled: {
+    name: "Filled DEM",
+    path: buildTilePath(
+      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_DEM_Filled.tiff",
+    ),
+    colorScale: "terrain",
+    opacity: 0.8,
+    previewColor: "#8BC34A",
+    description: "Sink-filled elevation model",
+    unit: " m",
+  },
+  slope: {
+    name: "Slope",
+    path: buildTilePath(
+      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_Slope.tiff",
+    ),
+    colorScale: "slope",
+    opacity: 0.8,
+    previewColor: "#FF9800",
+    description: "Terrain steepness",
+    unit: "°",
+  },
+  aspect: {
+    name: "Aspect",
+    path: buildTilePath(
+      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_Aspect.tiff",
+    ),
+    colorScale: "hsv",
+    opacity: 0.8,
+    previewColor: "#9C27B0",
+    description: "Slope direction",
+    unit: "°",
+  },
+  twi: {
+    name: "Topographic Wetness Index",
+    path: buildTilePath(
+      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_TWI.tif",
+    ),
+    colorScale: "blues",
+    opacity: 0.8,
+    previewColor: "#2196F3",
+    description: "Soil moisture potential",
+    unit: "",
+  },
+  hand: {
+    name: "Height Above Nearest Drainage",
+    path: buildTilePath(
+      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_HAND.tif",
+    ),
+    colorScale: "reds",
+    opacity: 0.8,
+    previewColor: "#F44336",
+    description: "Flood depth proxy",
+    unit: " m",
+  },
+  flow_accumulation: {
+    name: "Flow Accumulation",
+    path: buildTilePath(
+      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_Flow_Accumulation.tif",
+    ),
+    colorScale: "blues",
+    opacity: 0.8,
+    previewColor: "#00BCD4",
+    description: "Water concentration areas",
+    unit: " cells",
+  },
+  flow_accumulation_log: {
+    name: "Flow Accumulation (Log)",
+    path: buildTilePath(
+      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_Flow_Accumulation_Log.tif",
+    ),
+    colorScale: "blues",
+    opacity: 0.8,
+    previewColor: "#26C6DA",
+    description: "Log-transformed flow",
+    unit: "",
+  },
+  chirps: {
+    name: "CHIRPS Rainfall",
+    path: buildTilePath(
+      "FOR TRAINING/CLIMATIC DATAS/qgis/Zamboanga_CHIRPS_Resampled.tiff",
+    ),
+    colorScale: "rainbow",
+    opacity: 0.8,
+    previewColor: "#E91E63",
+    description: "Rainfall data",
+    unit: " mm",
+  },
+  river_network: {
+    name: "River Network",
+    path: buildTilePath(
+      "FOR TRAINING/HYDROLOGICAL DATAS/qgis/Zamboanga_River_Network.tiff",
+    ),
+    colorScale: "blues",
+    opacity: 0.8,
+    previewColor: "#1565C0",
+    description: "River/stream network",
+    unit: "",
+  },
+  drainage_density: {
+    name: "Drainage Density",
+    path: buildTilePath(
+      "FOR TRAINING/HYDROLOGICAL DATAS/qgis/Zamboanga_Drainage_Density.tiff",
+    ),
+    colorScale: "greens",
+    opacity: 0.8,
+    previewColor: "#2E7D32",
+    description: "Stream frequency",
+    unit: " km/km²",
+  },
+  distance_to_river: {
+    name: "Distance to River",
+    path: buildTilePath(
+      "FOR TRAINING/HYDROLOGICAL DATAS/qgis/Zamboanga_Distance_to_river.tiff",
+    ),
+    colorScale: "purples",
+    opacity: 0.8,
+    previewColor: "#6A1B9A",
+    description: "Proximity to water bodies",
+    unit: " m",
+  },
+  rivers_raster: {
+    name: "Rivers Raster",
+    path: buildTilePath(
+      "FOR TRAINING/HYDROLOGICAL DATAS/qgis/Zamboanga_Rivers_Rasters.tif",
+    ),
+    colorScale: "blues",
+    opacity: 0.8,
+    previewColor: "#0D47A1",
+    description: "Rasterized rivers",
+    unit: "",
+  },
+};
 
 function haversineDistance([lat1, lon1], [lat2, lon2]) {
   const R = 6371000;
@@ -164,12 +376,6 @@ async function fetchBarangayPopulations() {
   }
 }
 
-// Fetches Zamboanga City's official OSM administrative boundary relation
-// and extracts only the segments that AREN'T tagged natural=coastline —
-// those are the "imaginary" straight lines OSM draws out into the sea to
-// mark the extent of the city's municipal waters (per R.A. 8550, 15km from
-// the coastline). The land/coastline portion is already covered by our
-// local boundary geojson, so we only need these sea-crossing segments.
 async function fetchZamboangaMaritimeBoundary() {
   try {
     const cached = localStorage.getItem(MARITIME_BOUNDARY_CACHE_KEY);
@@ -183,9 +389,7 @@ async function fetchZamboangaMaritimeBoundary() {
         return parsed.geojson;
       }
     }
-  } catch {
-    // corrupt cache entry — ignore and refetch
-  }
+  } catch {}
 
   try {
     const query = `
@@ -228,9 +432,7 @@ async function fetchZamboangaMaritimeBoundary() {
         MARITIME_BOUNDARY_CACHE_KEY,
         JSON.stringify({ fetchedAt: Date.now(), geojson }),
       );
-    } catch {
-      // storage full/unavailable — not critical, just skip caching
-    }
+    } catch {}
 
     return geojson;
   } catch (err) {
@@ -269,12 +471,10 @@ function LegendControl() {
   return null;
 }
 
-// Google Maps-style Controls
 function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
   const map = useMap();
 
   useEffect(() => {
-    // Create the main control container
     const control = L.control({ position: "bottomright" });
 
     control.onAdd = () => {
@@ -287,7 +487,6 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
       container.style.overflow = "hidden";
       container.style.width = "40px";
 
-      // Locate button (top)
       const locateBtn = document.createElement("button");
       locateBtn.innerHTML = `
         <svg viewBox="0 0 24 24" width="20" height="20" style="pointer-events: none;">
@@ -318,7 +517,6 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
         onLocate?.();
       });
 
-      // Center button (middle)
       const centerBtn = document.createElement("button");
       centerBtn.innerHTML = `
         <svg viewBox="0 0 24 24" width="20" height="20" style="pointer-events: none;">
@@ -354,7 +552,6 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
         }
       });
 
-      // Clear button (bottom)
       const clearBtn = document.createElement("button");
       clearBtn.innerHTML = `
         <svg viewBox="0 0 24 24" width="20" height="20" style="pointer-events: none;">
@@ -398,7 +595,6 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
 
     control.addTo(map);
 
-    // Create separate zoom control
     const zoomControl = L.control({ position: "bottomright" });
 
     zoomControl.onAdd = () => {
@@ -474,9 +670,6 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
     };
 
     zoomControl.addTo(map);
-
-    // Store references for cleanup
-    const controls = { control, zoomControl };
 
     return () => {
       control.remove();
@@ -694,7 +887,6 @@ function POILayer({ onFacilities, hiddenFacilities = [] }) {
     onFacilitiesRef.current = onFacilities;
   }, [onFacilities]);
 
-  // Listen to zoom changes
   useEffect(() => {
     const handleZoomEnd = () => {
       setCurrentZoom(map.getZoom());
@@ -726,11 +918,9 @@ function POILayer({ onFacilities, hiddenFacilities = [] }) {
         return;
       }
 
-      // Cluster when zoom level is below 13 (zoomed out), don't cluster when zoom level is 13+ (zoomed in)
       const shouldCluster = zoomLevel < 13;
 
       if (shouldCluster) {
-        // Use clustering - simplified icon without background, border, or count
         const clusterGroup = L.markerClusterGroup({
           maxClusterRadius: 40,
           iconCreateFunction: function (cluster) {
@@ -782,7 +972,6 @@ function POILayer({ onFacilities, hiddenFacilities = [] }) {
         clusterGroup.addTo(map);
         clusterRef.current = clusterGroup;
       } else {
-        // Don't cluster - add markers individually (at zoom level 13+)
         const markerGroup = L.layerGroup();
 
         visibleRows.forEach((row) => {
@@ -816,7 +1005,6 @@ function POILayer({ onFacilities, hiddenFacilities = [] }) {
         clusterRef.current = markerGroup;
       }
 
-      // Send all facilities to parent
       onFacilitiesRef.current?.(
         rows.map((row) => ({
           lat: row.lat,
@@ -870,12 +1058,181 @@ function POILayer({ onFacilities, hiddenFacilities = [] }) {
     };
   }, [map, renderFacilities, currentZoom]);
 
-  // Re-render when zoom or hidden facilities change
   useEffect(() => {
     if (allFacilitiesRef.current.length > 0) {
       renderFacilities(allFacilitiesRef.current, currentZoom);
     }
   }, [currentZoom, hiddenFacilities, renderFacilities]);
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Evacuation centers layer — reads from public.evacuation_centers.
+// Only rows that have both latitude and longitude are plotted; rows flagged
+// "To be updated" (missing coords) are skipped and counted in the console.
+// ---------------------------------------------------------------------------
+function EvacuationCentersLayer({ onCentersLoaded }) {
+  const map = useMap();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [currentZoom, setCurrentZoom] = useState(map.getZoom());
+  const clusterRef = useRef(null);
+  const allCentersRef = useRef([]);
+  const onCentersLoadedRef = useRef(onCentersLoaded);
+
+  useEffect(() => {
+    onCentersLoadedRef.current = onCentersLoaded;
+  }, [onCentersLoaded]);
+
+  useEffect(() => {
+    const handleZoomEnd = () => setCurrentZoom(map.getZoom());
+    map.on("zoomend", handleZoomEnd);
+    return () => map.off("zoomend", handleZoomEnd);
+  }, [map]);
+
+  const makePopupHtml = (row) => `
+    <div style="min-width: 210px; font-family: Arial, sans-serif; font-size: 12px; line-height: 1.5;">
+      <strong style="font-size: 13px;">${row.name}</strong><br>
+      <span style="color:#555;">District: ${row.district || "N/A"}</span><br>
+      ${row.location ? `Location: ${row.location}<br>` : ""}
+      ${row.proximity ? `Proximity: ${row.proximity}<br>` : ""}
+      ${row.floor_area_sqm != null ? `Floor area: ${row.floor_area_sqm} sqm<br>` : ""}
+      ${row.remarks ? `<em style="color:#b00020;">${row.remarks}</em><br>` : ""}
+      <span style="font-size:10px; color:#999;">Center No. ${row.center_no}</span>
+    </div>
+  `;
+
+  const makeMarkerIcon = () =>
+    L.divIcon({
+      html: `<div style="font-size:22px; line-height:22px; text-shadow:0 0 3px #fff, 0 0 2px #fff;">⛺</div>`,
+      iconSize: [24, 24],
+      className: "custom-evac-marker",
+    });
+
+  const renderCenters = useCallback(
+    (rows, zoomLevel) => {
+      if (!map) return;
+
+      if (clusterRef.current) {
+        map.removeLayer(clusterRef.current);
+        clusterRef.current = null;
+      }
+
+      const valid = rows
+        .map((r) => ({
+          ...r,
+          latitude: r.latitude == null ? null : Number(r.latitude),
+          longitude: r.longitude == null ? null : Number(r.longitude),
+        }))
+        .filter(
+          (r) => Number.isFinite(r.latitude) && Number.isFinite(r.longitude),
+        );
+
+      const skipped = rows.length - valid.length;
+      if (skipped > 0) {
+        console.warn(
+          `Evacuation centers: ${skipped} row(s) skipped — missing lat/lng (likely marked "To be updated").`,
+        );
+      }
+
+      if (valid.length === 0) {
+        setLoading(false);
+        return;
+      }
+
+      const shouldCluster = zoomLevel < 13;
+
+      if (shouldCluster) {
+        const clusterGroup = L.markerClusterGroup({
+          maxClusterRadius: 45,
+          iconCreateFunction: function (cluster) {
+            const count = cluster.getChildCount();
+            const size = 34 + Math.min(20, count);
+            const div = document.createElement("div");
+            div.style.cssText = `
+              width:${size}px; height:${size}px;
+              display:flex; align-items:center; justify-content:center;
+              background:#d32f2f; color:#fff; font-weight:bold;
+              font-family: Arial, sans-serif; font-size:13px;
+              border-radius:50%; border:2px solid #fff;
+              box-shadow:0 1px 4px rgba(0,0,0,0.4);
+            `;
+            div.innerHTML = `⛺<span style="font-size:11px; margin-left:2px;">${count}</span>`;
+            return L.divIcon({
+              html: div.outerHTML,
+              iconSize: [size, size],
+              className: "custom-cluster-icon",
+            });
+          },
+        });
+
+        valid.forEach((row) => {
+          L.marker([row.latitude, row.longitude], { icon: makeMarkerIcon() })
+            .bindPopup(makePopupHtml(row))
+            .addTo(clusterGroup);
+        });
+
+        clusterGroup.addTo(map);
+        clusterRef.current = clusterGroup;
+      } else {
+        const group = L.layerGroup();
+        valid.forEach((row) => {
+          L.marker([row.latitude, row.longitude], { icon: makeMarkerIcon() })
+            .bindPopup(makePopupHtml(row))
+            .addTo(group);
+        });
+        group.addTo(map);
+        clusterRef.current = group;
+      }
+
+      setLoading(false);
+    },
+    [map],
+  );
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchCenters = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        const { data, error: queryError } = await supabase
+          .from("evacuation_centers")
+          .select(
+            "id, center_no, district, name, location, proximity, floor_area_sqm, remarks, latitude, longitude",
+          );
+        if (queryError) throw queryError;
+        if (isMounted && data) {
+          allCentersRef.current = data;
+          onCentersLoadedRef.current?.(data);
+          renderCenters(data, currentZoom);
+        }
+      } catch (err) {
+        if (isMounted) {
+          setError(`Failed to load evacuation centers: ${err.message}`);
+          setLoading(false);
+        }
+      }
+    };
+
+    fetchCenters();
+
+    return () => {
+      isMounted = false;
+      if (clusterRef.current && map) {
+        map.removeLayer(clusterRef.current);
+        clusterRef.current = null;
+      }
+    };
+  }, [map, renderCenters, currentZoom]);
+
+  useEffect(() => {
+    if (allCentersRef.current.length > 0) {
+      renderCenters(allCentersRef.current, currentZoom);
+    }
+  }, [currentZoom, renderCenters]);
 
   return null;
 }
@@ -898,6 +1255,7 @@ function findBarangayForPoint(latlng, barangayData) {
 
 function RoutingLayer({
   facilities,
+  evacuationCenters, // <-- NEW
   onSelectionChange,
   onRequestLocation,
   onRequestReset,
@@ -960,12 +1318,46 @@ function RoutingLayer({
       setErrorMsg(null);
       setOutsideBoundary(false);
       try {
-        const filtered = filterType
-          ? facilities.filter((f) => f.type === filterType)
-          : facilities;
-        if (!filtered || filtered.length === 0) {
-          throw new Error(`No facilities found for type "${filterType}"`);
+        // --- Pick the correct source table based on the active filter ---
+        // "Evacuation Center" routes against the evacuation_centers table;
+        // everything else routes against health_facilities.
+        let filtered;
+
+        if (filterType === EVACUATION_CENTER_TYPE) {
+          filtered = (evacuationCenters || [])
+            .map((c) => {
+              const lat = c.latitude == null ? NaN : Number(c.latitude);
+              const lon = c.longitude == null ? NaN : Number(c.longitude);
+              return {
+                lat,
+                lon,
+                name: c.name,
+                type: EVACUATION_CENTER_TYPE,
+                addr_street: c.location || null,
+                addr_city: c.district || null,
+                phone: null,
+                website: null,
+                // Carry the raw row so the sidebar can render evac fields.
+                _evac: c,
+              };
+            })
+            .filter((f) => Number.isFinite(f.lat) && Number.isFinite(f.lon));
+
+          if (filtered.length === 0) {
+            throw new Error(
+              'No evacuation centers with coordinates are available yet. Some entries are still marked "To be updated".',
+            );
+          }
+        } else {
+          filtered = filterType
+            ? facilities.filter((f) => f.type === filterType)
+            : facilities;
+
+          if (!filtered || filtered.length === 0) {
+            throw new Error(`No facilities found for type "${filterType}"`);
+          }
         }
+
         const originCoords = [latlng.lat, latlng.lng];
         const candidates = kNearestByHaversine(originCoords, filtered, 15);
         const ranked = await fetchRoadDistances(originCoords, candidates);
@@ -994,7 +1386,13 @@ function RoutingLayer({
         onClearHighlight?.();
       }
     },
-    [facilities, filterType, onNearestFacilitiesFound, onClearHighlight],
+    [
+      facilities,
+      evacuationCenters, // <-- NEW
+      filterType,
+      onNearestFacilitiesFound,
+      onClearHighlight,
+    ],
   );
 
   const handleNewOrigin = useCallback(
@@ -1025,13 +1423,11 @@ function RoutingLayer({
       map.removeLayer(layerRef.current);
       layerRef.current = null;
     }
-    // Reset map view to default
     map.setView([7.0736, 122.01], 10);
   }, [map, onClearHighlight]);
 
   const centerLocation = useCallback(() => {
     if (origin) {
-      // Center on origin with appropriate zoom
       map.setView([origin.lat, origin.lng], 14);
     }
   }, [origin, map]);
@@ -1099,11 +1495,15 @@ function RoutingLayer({
     onRequestCenter?.(centerLocation);
   }, [centerLocation, onRequestCenter]);
 
+  // Re-run the search whenever the active filter changes, OR when the
+  // evacuation-centers data finishes loading (in case the user selected
+  // "Evacuation Center" before the table was fetched).
   useEffect(() => {
     if (origin && mode !== "loading") {
       runSearch(origin);
     }
-  }, [filterType]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterType, evacuationCenters]);
 
   useEffect(() => {
     if (!origin) {
@@ -1128,15 +1528,6 @@ function RoutingLayer({
       }),
     }).addTo(group);
 
-    // Create bounds that include both the origin marker and every nearby
-    // facility marker. IMPORTANT: L.latLngBounds(corner1, corner2) needs
-    // two corners. Passing a single [lat, lng] array as corner1 with no
-    // corner2 makes Leaflet iterate over that array's *elements*
-    // (origin.lat, origin.lng) as if each were its own LatLng, which are
-    // just bare numbers and get silently dropped — so the bounds ends up
-    // built only from the facility markers and the pin gets clipped out
-    // of the fitBounds zoom. Passing the same point twice as both
-    // corners avoids that.
     const bounds = L.latLngBounds(
       [origin.lat, origin.lng],
       [origin.lat, origin.lng],
@@ -1169,13 +1560,12 @@ function RoutingLayer({
     group.addTo(map);
     layerRef.current = group;
 
-    // Always fit bounds to show both origin and facilities
     if (results.length > 0) {
-      map.fitBounds(bounds, { 
-        padding: [50, 50], 
+      map.fitBounds(bounds, {
+        padding: [50, 50],
         maxZoom: 15,
         animate: true,
-        duration: 0.5
+        duration: 0.5,
       });
     } else {
       map.setView([origin.lat, origin.lng], 14);
@@ -1189,8 +1579,17 @@ function RoutingLayer({
   return null;
 }
 
-function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
+function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded, hideFSI }) {
   const map = useMap();
+  const barangayLayerRef = useRef(null);
+  const maskLayerRef = useRef(null);
+  const borderLayerRef = useRef(null);
+  const maritimeLayerRef = useRef(null);
+
+  const hideFSIRef = useRef(hideFSI);
+  useEffect(() => {
+    hideFSIRef.current = hideFSI;
+  }, [hideFSI]);
 
   useEffect(() => {
     let maskLayer, borderLayer, barangayLayer, maritimeLayer;
@@ -1227,11 +1626,13 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
         },
         interactive: false,
       }).addTo(map);
+      maskLayerRef.current = maskLayer;
 
       borderLayer = L.geoJSON(cityData, {
         style: { color: "#e8401c", weight: 2.5, opacity: 1, fill: false },
         interactive: false,
       }).addTo(map);
+      borderLayerRef.current = borderLayer;
 
       if (maritimeGeoJSON?.features?.length) {
         maritimeLayer = L.geoJSON(maritimeGeoJSON, {
@@ -1243,6 +1644,7 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
           },
           interactive: false,
         }).addTo(map);
+        maritimeLayerRef.current = maritimeLayer;
       }
 
       let unmatchedCount = 0;
@@ -1287,11 +1689,12 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
             weight: 1,
             opacity: 0.6,
             fillColor: RISK_LEVELS[risk] || RISK_LEVELS["Low Risk"],
-            fillOpacity: 0.35,
+            fillOpacity: hideFSIRef.current ? 0 : 0.15,
           };
         },
-        interactive: true,
+        interactive: !hideFSIRef.current,
         onEachFeature: (feature, layer) => {
+          if (hideFSIRef.current) return;
           const name = feature.properties.adm4_name;
           const risk = feature.properties.fsi_risk;
           const population = feature.properties.population;
@@ -1316,7 +1719,7 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
           let clickOpened = false;
 
           layer.on("mouseover", function () {
-            this.setStyle({ fillOpacity: 0.6, weight: 2 });
+            this.setStyle({ fillOpacity: 0.3, weight: 2 });
             if (!isLongPress && !clickOpened) {
               this.openTooltip();
             }
@@ -1327,7 +1730,7 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
               clearTimeout(longPressTimer);
               longPressTimer = null;
             }
-            this.setStyle({ fillOpacity: 0.35, weight: 1 });
+            this.setStyle({ fillOpacity: 0.15, weight: 1 });
             if (!clickOpened) {
               this.closeTooltip();
             }
@@ -1390,17 +1793,568 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded }) {
           });
         },
       }).addTo(map);
+      barangayLayerRef.current = barangayLayer;
     });
 
     return () => {
-      if (maskLayer) map.removeLayer(maskLayer);
-      if (borderLayer) map.removeLayer(borderLayer);
-      if (barangayLayer) map.removeLayer(barangayLayer);
-      if (maritimeLayer) map.removeLayer(maritimeLayer);
+      if (maskLayerRef.current) map.removeLayer(maskLayerRef.current);
+      if (borderLayerRef.current) map.removeLayer(borderLayerRef.current);
+      if (barangayLayerRef.current) map.removeLayer(barangayLayerRef.current);
+      if (maritimeLayerRef.current) map.removeLayer(maritimeLayerRef.current);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, onBoundaryLoaded, onBarangaysLoaded]);
 
+  useEffect(() => {
+    if (barangayLayerRef.current) {
+      if (hideFSI) {
+        map.removeLayer(barangayLayerRef.current);
+      } else {
+        map.addLayer(barangayLayerRef.current);
+      }
+    }
+  }, [map, hideFSI]);
+
   return null;
+}
+
+function QGISLayerControl({
+  onLayerToggle,
+  activeLayers,
+  layerErrors,
+  layerLoading,
+}) {
+  const [isOpen, setIsOpen] = useState(true);
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    L.DomEvent.disableClickPropagation(containerRef.current);
+    L.DomEvent.disableScrollPropagation(containerRef.current);
+  }, []);
+
+  const handleToggleLayer = (key) => {
+    onLayerToggle(key);
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      className="absolute top-4 left-4 z-[1000] min-w-[160px] max-w-[220px]"
+      style={{
+        backgroundColor: "rgba(255,255,255,0.92)",
+        backdropFilter: "blur(6px)",
+        borderRadius: "8px",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
+        padding: "6px 0",
+        border: "1px solid rgba(0,0,0,0.05)",
+      }}
+    >
+      <div
+        className="flex items-center justify-between px-3 py-1.5 cursor-pointer"
+        onClick={() => setIsOpen(!isOpen)}
+      >
+        <span className="text-xs font-medium text-gray-700 flex items-center gap-1.5">
+          <span>🗺️</span>
+          Layers
+          {activeLayers.length > 0 && (
+            <span className="text-[10px] bg-gray-100 text-gray-600 rounded-full px-1.5 py-0.5 ml-0.5">
+              {activeLayers.length}
+            </span>
+          )}
+        </span>
+        <span className="text-gray-400 text-xs">{isOpen ? "▾" : "▸"}</span>
+      </div>
+      {isOpen && (
+        <div className="px-1.5 py-1 space-y-0.5 max-h-[320px] overflow-y-auto">
+          {Object.entries(QGIS_LAYER_CONFIGS).map(([key, config]) => {
+            const isActive = activeLayers.includes(key);
+            const isLoading = !!layerLoading?.[key];
+            const errorMsg = layerErrors?.[key];
+            return (
+              <div key={key}>
+                <div
+                  className={`
+                    flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-all
+                    hover:bg-gray-50
+                    ${isActive ? "bg-gray-50/80" : ""}
+                  `}
+                  onClick={() => handleToggleLayer(key)}
+                  title={errorMsg || config.description}
+                >
+                  <div
+                    className="w-2.5 h-2.5 rounded-full flex-shrink-0 transition-all"
+                    style={{
+                      backgroundColor: errorMsg
+                        ? "#e53935"
+                        : isActive
+                          ? config.previewColor
+                          : "#e0e0e0",
+                      boxShadow: isActive
+                        ? `0 0 0 2px ${config.previewColor}33`
+                        : "none",
+                    }}
+                  />
+                  <span className="text-[11px] text-gray-700 flex-1 truncate">
+                    {config.name}
+                  </span>
+                  <span className="text-[9px] text-gray-400">
+                    {isLoading ? "⏳" : errorMsg ? "⚠️" : isActive ? "●" : "○"}
+                  </span>
+                </div>
+                {errorMsg && (
+                  <div className="px-2 pb-1 text-[9px] text-red-500 leading-tight">
+                    {errorMsg}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QGISRasterLayer({
+  layerKey,
+  isActive,
+  cityBoundary,
+  onLoadingChange,
+  onLoadError,
+  onRasterLoaded,
+}) {
+  const map = useMap();
+  const layerRef = useRef(null);
+  const loadAttemptedRef = useRef(false);
+  const isMountedRef = useRef(true);
+  const cityBoundaryRef = useRef(cityBoundary);
+
+  useEffect(() => {
+    cityBoundaryRef.current = cityBoundary;
+  }, [cityBoundary]);
+
+  useEffect(() => {
+    if (!map.getPane("qgis-pane")) {
+      const pane = map.createPane("qgis-pane");
+      pane.style.zIndex = 600;
+      pane.style.pointerEvents = "none";
+    }
+  }, [map]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadRasterLayer = async () => {
+      if (!isActive || !isMountedRef.current) {
+        if (layerRef.current) {
+          map.removeLayer(layerRef.current);
+          layerRef.current = null;
+        }
+        onLoadError?.(layerKey, null);
+        onRasterLoaded?.(layerKey, null);
+        loadAttemptedRef.current = false;
+        onLoadingChange?.(layerKey, false);
+        return;
+      }
+
+      if (loadAttemptedRef.current && layerRef.current) {
+        return;
+      }
+
+      const config = QGIS_LAYER_CONFIGS[layerKey];
+      try {
+        onLoadingChange?.(layerKey, true);
+        onLoadError?.(layerKey, null);
+        loadAttemptedRef.current = true;
+
+        console.log(`Loading ${layerKey} from:`, config.path);
+
+        const response = await fetch(config.path);
+        if (!response.ok) {
+          throw new Error(
+            `HTTP ${response.status}: ${response.statusText}. Make sure the static-data server is running at ${TILE_SERVER_BASE}`,
+          );
+        }
+
+        const arrayBuffer = await response.arrayBuffer();
+        const tiff = await geotiff.fromArrayBuffer(arrayBuffer);
+        const image = await tiff.getImage();
+        const bbox = image.getBoundingBox();
+        const width = image.getWidth();
+        const height = image.getHeight();
+        const data = await image.readRasters();
+
+        let noDataValue = null;
+        try {
+          const nd = image.getGDALNoData ? image.getGDALNoData() : null;
+          if (nd !== null && nd !== undefined && !Number.isNaN(Number(nd))) {
+            noDataValue = Number(nd);
+          }
+        } catch {
+          noDataValue = null;
+        }
+
+        console.log(`Image ${layerKey}:`, { width, height, bbox });
+
+        if (cancelled || !isMountedRef.current) return;
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        const imageData = ctx.createImageData(width, height);
+
+        const values = data[0];
+        let minVal = Infinity;
+        let maxVal = -Infinity;
+        for (let i = 0; i < values.length; i++) {
+          if (noDataValue != null && values[i] === noDataValue) continue;
+          if (values[i] < minVal) minVal = values[i];
+          if (values[i] > maxVal) maxVal = values[i];
+        }
+        const range = maxVal - minVal;
+
+        for (let i = 0; i < values.length; i++) {
+          const idx = i * 4;
+          if (noDataValue != null && values[i] === noDataValue) {
+            imageData.data[idx] = 0;
+            imageData.data[idx + 1] = 0;
+            imageData.data[idx + 2] = 0;
+            imageData.data[idx + 3] = 0;
+            continue;
+          }
+          const normalized = range > 0 ? (values[i] - minVal) / range : 0;
+          const [r, g, b] = getColorRamp(normalized, config.colorScale);
+          imageData.data[idx] = r;
+          imageData.data[idx + 1] = g;
+          imageData.data[idx + 2] = b;
+          imageData.data[idx + 3] = 255;
+        }
+
+        ctx.putImageData(imageData, 0, 0);
+
+        let outputCanvas = canvas;
+        const clipRings = getClipRingsFromBoundary(
+          cityBoundaryRef.current,
+          bbox,
+          width,
+          height,
+        );
+        if (clipRings.length > 0) {
+          const clippedCanvas = document.createElement("canvas");
+          clippedCanvas.width = width;
+          clippedCanvas.height = height;
+          const clipCtx = clippedCanvas.getContext("2d");
+          clipCtx.save();
+          clipCtx.beginPath();
+          clipRings.forEach((ring) => {
+            ring.forEach(([x, y], i) => {
+              if (i === 0) clipCtx.moveTo(x, y);
+              else clipCtx.lineTo(x, y);
+            });
+            clipCtx.closePath();
+          });
+          clipCtx.clip("evenodd");
+          clipCtx.drawImage(canvas, 0, 0);
+          clipCtx.restore();
+          outputCanvas = clippedCanvas;
+        } else {
+          console.warn(
+            `City boundary not yet loaded — rendering ${layerKey} unclipped this time.`,
+          );
+        }
+
+        const dataUrl = outputCanvas.toDataURL("image/png");
+
+        const west = bbox[0];
+        const south = bbox[1];
+        const east = bbox[2];
+        const north = bbox[3];
+
+        const bottomLeft = utmToLatLng(west, south);
+        const topRight = utmToLatLng(east, north);
+
+        console.log(
+          `Converted bounds: [${bottomLeft.lat}, ${bottomLeft.lng}] to [${topRight.lat}, ${topRight.lng}]`,
+        );
+
+        if (cancelled || !isMountedRef.current) return;
+
+        if (layerRef.current) {
+          map.removeLayer(layerRef.current);
+          layerRef.current = null;
+        }
+
+        const overlay = L.imageOverlay(
+          dataUrl,
+          [
+            [bottomLeft.lat, bottomLeft.lng],
+            [topRight.lat, topRight.lng],
+          ],
+          {
+            opacity: config.opacity || 0.8,
+            interactive: false,
+            pane: "qgis-pane",
+          },
+        );
+
+        overlay.addTo(map);
+        layerRef.current = overlay;
+
+        onRasterLoaded?.(layerKey, {
+          values,
+          width,
+          height,
+          bbox,
+          noDataValue,
+        });
+
+        map.fitBounds(
+          [
+            [bottomLeft.lat, bottomLeft.lng],
+            [topRight.lat, topRight.lng],
+          ],
+          { padding: [50, 50] },
+        );
+
+        console.log(`Successfully loaded ${layerKey}`);
+      } catch (error) {
+        console.error(`Failed to load ${layerKey} (${config.path}):`, error);
+        if (!cancelled && isMountedRef.current) {
+          onLoadError?.(layerKey, error.message || "Failed to load layer");
+          onRasterLoaded?.(layerKey, null);
+          loadAttemptedRef.current = false;
+        }
+      } finally {
+        if (isMountedRef.current && !cancelled) {
+          onLoadingChange?.(layerKey, false);
+        }
+      }
+    };
+
+    loadRasterLayer();
+
+    return () => {
+      cancelled = true;
+      if (layerRef.current) {
+        map.removeLayer(layerRef.current);
+        layerRef.current = null;
+      }
+      onRasterLoaded?.(layerKey, null);
+      loadAttemptedRef.current = false;
+    };
+  }, [map, layerKey, isActive, onLoadingChange, onLoadError, onRasterLoaded]);
+
+  return null;
+}
+
+function QGISHoverTooltip({ rasterDataRef }) {
+  const map = useMap();
+
+  useEffect(() => {
+    const container = map.getContainer();
+
+    const tooltipEl = document.createElement("div");
+    tooltipEl.className = "qgis-hover-tooltip";
+    tooltipEl.style.cssText = `
+      position: absolute;
+      z-index: 1000;
+      pointer-events: none;
+      background: rgba(0,0,0,0.78);
+      color: #fff;
+      font-size: 11px;
+      font-family: Arial, sans-serif;
+      padding: 6px 9px;
+      border-radius: 4px;
+      line-height: 1.5;
+      display: none;
+      white-space: nowrap;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+    `;
+    container.appendChild(tooltipEl);
+
+    const formatValue = (value) => {
+      const abs = Math.abs(value);
+      if (abs >= 1000) return value.toFixed(0);
+      if (abs >= 10) return value.toFixed(1);
+      return value.toFixed(2);
+    };
+
+    const handleMouseMove = (e) => {
+      const activeKeys = Object.keys(rasterDataRef.current || {});
+      if (activeKeys.length === 0) {
+        tooltipEl.style.display = "none";
+        return;
+      }
+
+      const lines = [];
+      for (const key of activeKeys) {
+        const info = rasterDataRef.current[key];
+        if (!info) continue;
+        const value = getRasterValueAtLatLng(e.latlng, info);
+        if (value == null) continue;
+        const config = QGIS_LAYER_CONFIGS[key];
+        const label = config?.name || key;
+        const unit = config?.unit || "";
+        lines.push(`<strong>${label}:</strong> ${formatValue(value)}${unit}`);
+      }
+
+      if (lines.length === 0) {
+        tooltipEl.style.display = "none";
+        return;
+      }
+
+      tooltipEl.innerHTML = lines.join("<br>");
+      tooltipEl.style.display = "block";
+
+      const point = map.latLngToContainerPoint(e.latlng);
+      const containerWidth = container.clientWidth;
+      const tooltipWidth = tooltipEl.offsetWidth;
+      const left =
+        point.x + 16 + tooltipWidth > containerWidth
+          ? point.x - tooltipWidth - 16
+          : point.x + 16;
+      tooltipEl.style.left = `${left}px`;
+      tooltipEl.style.top = `${point.y + 16}px`;
+    };
+
+    const handleMouseLeave = () => {
+      tooltipEl.style.display = "none";
+    };
+
+    map.on("mousemove", handleMouseMove);
+    container.addEventListener("mouseleave", handleMouseLeave);
+
+    return () => {
+      map.off("mousemove", handleMouseMove);
+      container.removeEventListener("mouseleave", handleMouseLeave);
+      if (tooltipEl.parentNode) tooltipEl.parentNode.removeChild(tooltipEl);
+    };
+  }, [map, rasterDataRef]);
+
+  return null;
+}
+
+function getColorRamp(value, scale) {
+  switch (scale) {
+    case "terrain":
+      if (value < 0.2) return [34, 139, 34];
+      if (value < 0.4) return [107, 142, 35];
+      if (value < 0.6) return [139, 119, 101];
+      if (value < 0.8) return [160, 140, 120];
+      return [120, 100, 80];
+    case "slope":
+      if (value < 0.2) return [200, 220, 100];
+      if (value < 0.4) return [255, 200, 50];
+      if (value < 0.6) return [255, 150, 50];
+      if (value < 0.8) return [200, 80, 50];
+      return [150, 30, 30];
+    case "blues":
+      if (value < 0.2) return [240, 248, 255];
+      if (value < 0.4) return [150, 200, 240];
+      if (value < 0.6) return [70, 150, 220];
+      if (value < 0.8) return [30, 100, 180];
+      return [10, 50, 140];
+    case "reds":
+      if (value < 0.2) return [255, 240, 240];
+      if (value < 0.4) return [255, 200, 200];
+      if (value < 0.6) return [255, 150, 150];
+      if (value < 0.8) return [220, 80, 80];
+      return [180, 30, 30];
+    case "greens":
+      if (value < 0.2) return [240, 255, 240];
+      if (value < 0.4) return [180, 220, 180];
+      if (value < 0.6) return [100, 180, 100];
+      if (value < 0.8) return [50, 140, 50];
+      return [20, 100, 20];
+    case "purples":
+      if (value < 0.2) return [245, 240, 255];
+      if (value < 0.4) return [200, 180, 240];
+      if (value < 0.6) return [150, 120, 220];
+      if (value < 0.8) return [100, 60, 180];
+      return [60, 20, 140];
+    case "hsv":
+      return hsvToRgb(value * 0.8, 1, 1);
+    case "rainbow":
+      return hsvToRgb(value, 1, 1);
+    default:
+      const gray = Math.round(value * 255);
+      return [gray, gray, gray];
+  }
+}
+
+function hsvToRgb(h, s, v) {
+  let r, g, b;
+  const i = Math.floor(h * 6);
+  const f = h * 6 - i;
+  const p = v * (1 - s);
+  const q = v * (1 - f * s);
+  const t = v * (1 - (1 - f) * s);
+  switch (i % 6) {
+    case 0:
+      r = v;
+      g = t;
+      b = p;
+      break;
+    case 1:
+      r = q;
+      g = v;
+      b = p;
+      break;
+    case 2:
+      r = p;
+      g = v;
+      b = t;
+      break;
+    case 3:
+      r = p;
+      g = q;
+      b = v;
+      break;
+    case 4:
+      r = t;
+      g = p;
+      b = v;
+      break;
+    case 5:
+      r = v;
+      g = p;
+      b = q;
+      break;
+  }
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+function QGISLayers({
+  activeLayers,
+  cityBoundary,
+  onLoadingChange,
+  onLoadError,
+  onRasterLoaded,
+}) {
+  return (
+    <>
+      {activeLayers.map((key) => (
+        <QGISRasterLayer
+          key={key}
+          layerKey={key}
+          isActive={true}
+          cityBoundary={cityBoundary}
+          onLoadingChange={onLoadingChange}
+          onLoadError={onLoadError}
+          onRasterLoaded={onRasterLoaded}
+        />
+      ))}
+    </>
+  );
 }
 
 const FloodMap = forwardRef(function FloodMap(
@@ -1415,13 +2369,20 @@ const FloodMap = forwardRef(function FloodMap(
 ) {
   const position = [7.0736, 122.01];
   const [facilities, setFacilities] = useState([]);
+  const [evacuationCenters, setEvacuationCenters] = useState([]); // <-- NEW
   const [cityBoundary, setCityBoundary] = useState(null);
   const [barangayData, setBarangayData] = useState(null);
   const [hiddenFacilities, setHiddenFacilities] = useState([]);
   const [hasLocation, setHasLocation] = useState(false);
+  const [activeQGISLayers, setActiveQGISLayers] = useState([]);
+  const [qgisLayerErrors, setQgisLayerErrors] = useState({});
+  const [qgisLayerLoading, setQgisLayerLoading] = useState({});
   const searchSelectRef = useRef(null);
   const clearLocationRef = useRef(null);
   const centerLocationRef = useRef(null);
+  const qgisRasterDataRef = useRef({});
+
+  const hasQGISLayersActive = activeQGISLayers.length > 0;
 
   const handleBoundaryLoaded = useCallback(
     (feature) => {
@@ -1441,6 +2402,10 @@ const FloodMap = forwardRef(function FloodMap(
 
   const handleNearestFacilitiesFound = useCallback(
     (nearestFacilities) => {
+      // Don't touch health-POI visibility when routing to evac centers —
+      // those are a completely separate dataset.
+      if (filterType === EVACUATION_CENTER_TYPE) return;
+
       const allFacilities = facilities;
       const nearestIds = new Set(
         nearestFacilities.map((f) => `${f.lat},${f.lon}`),
@@ -1450,7 +2415,7 @@ const FloodMap = forwardRef(function FloodMap(
       );
       setHiddenFacilities(toHide);
     },
-    [facilities],
+    [facilities, filterType],
   );
 
   const handleClearHighlight = useCallback(() => {
@@ -1490,6 +2455,40 @@ const FloodMap = forwardRef(function FloodMap(
     }
   }, []);
 
+  const handleLayerToggle = useCallback((layerKey) => {
+    setActiveQGISLayers((prev) => {
+      if (prev.includes(layerKey)) {
+        return prev.filter((key) => key !== layerKey);
+      } else {
+        return [...prev, layerKey];
+      }
+    });
+  }, []);
+
+  const handleQGISLoadingChange = useCallback((layerKey, isLoading) => {
+    setQgisLayerLoading((prev) => ({ ...prev, [layerKey]: isLoading }));
+  }, []);
+
+  const handleQGISLoadError = useCallback((layerKey, message) => {
+    setQgisLayerErrors((prev) => {
+      const next = { ...prev };
+      if (message) {
+        next[layerKey] = message;
+      } else {
+        delete next[layerKey];
+      }
+      return next;
+    });
+  }, []);
+
+  const handleRasterLoaded = useCallback((layerKey, data) => {
+    if (data) {
+      qgisRasterDataRef.current[layerKey] = data;
+    } else {
+      delete qgisRasterDataRef.current[layerKey];
+    }
+  }, []);
+
   useImperativeHandle(ref, () => ({
     searchLocation: (latlng) => {
       searchSelectRef.current?.(latlng);
@@ -1507,6 +2506,9 @@ const FloodMap = forwardRef(function FloodMap(
         centerLocationRef.current();
       }
     },
+    toggleLayer: (layerKey) => {
+      handleLayerToggle(layerKey);
+    },
   }));
 
   const handleSelectionChange = useCallback(
@@ -1516,7 +2518,6 @@ const FloodMap = forwardRef(function FloodMap(
     [onSelectionChange],
   );
 
-  // Set up refs for clear and center functions, populated by RoutingLayer
   const handleRequestClear = useCallback((fn) => {
     clearLocationRef.current = fn;
   }, []);
@@ -1587,6 +2588,7 @@ const FloodMap = forwardRef(function FloodMap(
         zoom={10}
         minZoom={3}
         scrollWheelZoom={true}
+        zoomControl={false}
         style={{ height: "100%", width: "100%" }}
       >
         <TileLayer
@@ -1596,13 +2598,30 @@ const FloodMap = forwardRef(function FloodMap(
         <ZamboangaMask
           onBoundaryLoaded={handleBoundaryLoaded}
           onBarangaysLoaded={handleBarangaysLoaded}
+          hideFSI={hasQGISLayersActive}
         />
+        {/* <QGISLayers
+          activeLayers={activeQGISLayers}
+          cityBoundary={cityBoundary}
+          onLoadingChange={handleQGISLoadingChange}
+          onLoadError={handleQGISLoadError}
+          onRasterLoaded={handleRasterLoaded}
+        />
+        <QGISHoverTooltip rasterDataRef={qgisRasterDataRef} />
+        <QGISLayerControl
+          onLayerToggle={handleLayerToggle}
+          activeLayers={activeQGISLayers}
+          layerErrors={qgisLayerErrors}
+          layerLoading={qgisLayerLoading}
+        /> */}
         <POILayer
           onFacilities={setFacilities}
           hiddenFacilities={hiddenFacilities}
         />
+        <EvacuationCentersLayer onCentersLoaded={setEvacuationCenters} />
         <RoutingLayer
           facilities={facilities}
+          evacuationCenters={evacuationCenters}
           onSelectionChange={handleSelectionChange}
           onRequestLocation={onRequestLocation}
           onRequestReset={onRequestReset}
