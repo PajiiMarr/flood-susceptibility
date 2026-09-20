@@ -1,11 +1,4 @@
-import {
-  useEffect,
-  useState,
-  useRef,
-  useCallback,
-  forwardRef,
-  useImperativeHandle,
-} from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
@@ -17,9 +10,22 @@ import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 import MarkerClusterGroup from "leaflet.markercluster";
 import * as geotiff from "geotiff";
 import proj4 from "proj4";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { MapPin, MapPinOff, Users, Waves, Search } from "lucide-react";
 
-// Pseudo facility-type used to route to evacuation centers. Must match the
-// string used in App.jsx (`EVACUATION_CENTER_TYPE`).
 export const EVACUATION_CENTER_TYPE = "Evacuation Center";
 
 const WORLD_RING = [
@@ -31,6 +37,34 @@ const WORLD_RING = [
 ];
 
 const RISK_LEVELS = {
+  "Very High Risk": "#d73027",
+  "High Risk": "#fc8d59",
+  "Medium Risk": "#fee090",
+  "Low Risk": "#91bfdb",
+};
+
+// Fill opacities tuned so risk colors are clearly distinguishable
+const FSI_OPACITY = {
+  normal: 0.6,
+  hover: 0.78,
+  selected: 0.88,
+  borderOpacity: 0.85,
+};
+
+const ROUTE_COLORS = ["#1a73e8", "#e68a00", "#c62828"];
+
+const FSI_MESSAGES = {
+  "Very High Risk":
+    "This area has a very high flood susceptibility. Expect severe and frequent flooding risk — prepare an evacuation plan and avoid low-lying routes during heavy rain.",
+  "High Risk":
+    "This area has a high flood susceptibility. Flooding is likely during heavy or prolonged rainfall — stay alert to local advisories.",
+  "Medium Risk":
+    "This area has a moderate flood susceptibility. Flooding is possible under sustained heavy rainfall, but less frequent than higher-risk zones.",
+  "Low Risk":
+    "This area has a low flood susceptibility. Flooding is unlikely under typical conditions, though extreme weather can still pose some risk.",
+};
+
+const FSI_COLORS = {
   "Very High Risk": "#d73027",
   "High Risk": "#fc8d59",
   "Medium Risk": "#fee090",
@@ -62,9 +96,6 @@ function buildTilePath(relativePath) {
   return `${TILE_SERVER_BASE}/${encoded}`;
 }
 
-// ---------------------------------------------------------------------------
-// UTM Zone 51N (EPSG:32651) -> WGS84 (EPSG:4326) conversion.
-// ---------------------------------------------------------------------------
 proj4.defs("EPSG:32651", "+proj=utm +zone=51 +datum=WGS84 +units=m +no_defs");
 
 function utmToLatLng(easting, northing) {
@@ -441,13 +472,31 @@ async function fetchZamboangaMaritimeBoundary() {
   }
 }
 
+async function reverseGeocode(lat, lng) {
+  const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=16&addressdetails=1`;
+  const res = await fetch(url, { headers: { "Accept-Language": "en" } });
+  if (!res.ok) throw new Error(`Reverse geocoding failed: ${res.status}`);
+  const data = await res.json();
+  const addr = data.address || {};
+  const specific =
+    addr.neighbourhood ||
+    addr.suburb ||
+    addr.village ||
+    addr.town ||
+    addr.city_district ||
+    addr.city;
+  const city = addr.city || addr.town || addr.municipality;
+  if (specific && city && specific !== city) return `${specific}, ${city}`;
+  return data.display_name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+}
+
 function LegendControl() {
   const map = useMap();
   useEffect(() => {
     const legend = L.control({ position: "topright" });
     legend.onAdd = () => {
       const div = L.DomUtil.create("div", "info legend");
-      div.style.backgroundColor = "rgba(255,255,255,1)";
+      div.style.backgroundColor = "rgba(255,255,255,0.9)";
       div.style.padding = "10px";
       div.style.borderRadius = "5px";
       div.style.boxShadow = "0 1px 5px rgba(0,0,0,0.2)";
@@ -494,16 +543,10 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
         </svg>
       `;
       locateBtn.style.cssText = `
-        background: none;
-        border: none;
-        padding: 8px 10px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: background 0.2s;
-        border-bottom: 1px solid #e0e0e0;
-        width: 100%;
-        position: relative;
+        background: none; border: none; padding: 8px 10px;
+        display: flex; align-items: center; justify-content: center;
+        transition: background 0.2s; border-bottom: 1px solid #e0e0e0;
+        width: 100%; position: relative; cursor: pointer;
       `;
       locateBtn.title = "Find my location";
       locateBtn.addEventListener("mouseenter", () => {
@@ -524,32 +567,23 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
         </svg>
       `;
       centerBtn.style.cssText = `
-        background: none;
-        border: none;
-        padding: 8px 10px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: background 0.2s;
-        border-bottom: 1px solid #e0e0e0;
-        width: 100%;
+        background: none; border: none; padding: 8px 10px;
+        display: flex; align-items: center; justify-content: center;
+        transition: background 0.2s; border-bottom: 1px solid #e0e0e0;
+        width: 100%; cursor: pointer;
         opacity: ${hasLocation ? "1" : "0.4"};
         pointer-events: ${hasLocation ? "auto" : "none"};
       `;
       centerBtn.title = "Center on location";
       centerBtn.addEventListener("mouseenter", () => {
-        if (hasLocation) {
-          centerBtn.style.backgroundColor = "#f0f0f0";
-        }
+        if (hasLocation) centerBtn.style.backgroundColor = "#f0f0f0";
       });
       centerBtn.addEventListener("mouseleave", () => {
         centerBtn.style.backgroundColor = "transparent";
       });
       centerBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        if (hasLocation) {
-          onCenterLocation?.();
-        }
+        if (hasLocation) onCenterLocation?.();
       });
 
       const clearBtn = document.createElement("button");
@@ -559,37 +593,27 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
         </svg>
       `;
       clearBtn.style.cssText = `
-        background: none;
-        border: none;
-        padding: 8px 10px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: background 0.2s;
-        width: 100%;
+        background: none; border: none; padding: 8px 10px;
+        display: flex; align-items: center; justify-content: center;
+        transition: background 0.2s; width: 100%; cursor: pointer;
         opacity: ${hasLocation ? "1" : "0.4"};
         pointer-events: ${hasLocation ? "auto" : "none"};
       `;
       clearBtn.title = "Clear location";
       clearBtn.addEventListener("mouseenter", () => {
-        if (hasLocation) {
-          clearBtn.style.backgroundColor = "#f0f0f0";
-        }
+        if (hasLocation) clearBtn.style.backgroundColor = "#f0f0f0";
       });
       clearBtn.addEventListener("mouseleave", () => {
         clearBtn.style.backgroundColor = "transparent";
       });
       clearBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        if (hasLocation) {
-          onClear?.();
-        }
+        if (hasLocation) onClear?.();
       });
 
       container.appendChild(locateBtn);
       container.appendChild(centerBtn);
       container.appendChild(clearBtn);
-
       return container;
     };
 
@@ -613,15 +637,10 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
         </svg>
       `;
       zoomInBtn.style.cssText = `
-        background: none;
-        border: none;
-        padding: 6px 10px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: background 0.2s;
-        border-bottom: 1px solid #e0e0e0;
-        width: 100%;
+        background: none; border: none; padding: 6px 10px;
+        display: flex; align-items: center; justify-content: center;
+        transition: background 0.2s; border-bottom: 1px solid #e0e0e0;
+        width: 100%; cursor: pointer;
       `;
       zoomInBtn.title = "Zoom in";
       zoomInBtn.addEventListener("mouseenter", () => {
@@ -642,14 +661,9 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
         </svg>
       `;
       zoomOutBtn.style.cssText = `
-        background: none;
-        border: none;
-        padding: 6px 10px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: background 0.2s;
-        width: 100%;
+        background: none; border: none; padding: 6px 10px;
+        display: flex; align-items: center; justify-content: center;
+        transition: background 0.2s; width: 100%; cursor: pointer;
       `;
       zoomOutBtn.title = "Zoom out";
       zoomOutBtn.addEventListener("mouseenter", () => {
@@ -665,7 +679,6 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
 
       zoomContainer.appendChild(zoomInBtn);
       zoomContainer.appendChild(zoomOutBtn);
-
       return zoomContainer;
     };
 
@@ -680,7 +693,86 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
   return null;
 }
 
-export function SidebarSearch({ onSelectLocation, cityBoundary }) {
+function MapModeControl({ mode, onModeChange }) {
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    L.DomEvent.disableClickPropagation(containerRef.current);
+    L.DomEvent.disableScrollPropagation(containerRef.current);
+  }, []);
+
+  const baseBtnStyle = {
+    padding: "7px 14px",
+    fontSize: "12px",
+    fontFamily: "Arial, sans-serif",
+    border: "none",
+    borderRadius: "6px",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+    transition: "all 0.15s ease",
+    whiteSpace: "nowrap",
+  };
+
+  const activeStyle = {
+    ...baseBtnStyle,
+    backgroundColor: "#1a73e8",
+    color: "#ffffff",
+    fontWeight: "600",
+    boxShadow: "0 1px 4px rgba(26,115,232,0.4)",
+  };
+
+  const inactiveStyle = {
+    ...baseBtnStyle,
+    backgroundColor: "transparent",
+    color: "#444",
+    fontWeight: "500",
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        position: "absolute",
+        top: "16px",
+        left: "50%",
+        transform: "translateX(-50%)",
+        zIndex: 2000,
+        backgroundColor: "rgba(255,255,255,0.85)",
+        backdropFilter: "blur(10px)",
+        WebkitBackdropFilter: "blur(10px)",
+        borderRadius: "8px",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+        padding: "4px",
+        display: "flex",
+        gap: "4px",
+        border: "1px solid rgba(255,255,255,0.4)",
+        pointerEvents: "auto",
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => onModeChange("marker")}
+        style={mode === "marker" ? activeStyle : inactiveStyle}
+        title="Click the map to find nearest facilities"
+      >
+        Marker Mode
+      </button>
+      <button
+        type="button"
+        onClick={() => onModeChange("barangay")}
+        style={mode === "barangay" ? activeStyle : inactiveStyle}
+        title="Click a barangay to view its details"
+      >
+        Barangay Mode
+      </button>
+    </div>
+  );
+}
+
+function MapSearchControl({ cityBoundary, onSelectLocation }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [showResults, setShowResults] = useState(false);
@@ -697,6 +789,12 @@ export function SidebarSearch({ onSelectLocation, cityBoundary }) {
   useEffect(() => {
     boundaryRef.current = cityBoundary;
   }, [cityBoundary]);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    L.DomEvent.disableClickPropagation(containerRef.current);
+    L.DomEvent.disableScrollPropagation(containerRef.current);
+  }, []);
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -730,7 +828,7 @@ export function SidebarSearch({ onSelectLocation, cityBoundary }) {
       const data = await res.json();
       setResults(data || []);
       setShowResults(true);
-    } catch (err) {
+    } catch {
       setResults([]);
       setShowResults(true);
     } finally {
@@ -758,94 +856,82 @@ export function SidebarSearch({ onSelectLocation, cityBoundary }) {
   return (
     <div
       ref={containerRef}
-      className="sidebar-search"
       style={{
-        width: "100%",
-        background: "white",
-        borderRadius: "4px",
-        boxShadow: "0 2px 6px rgba(0,0,0,0.3)",
-        padding: "8px",
-        position: "relative",
-        zIndex: 1000,
+        position: "absolute",
+        top: "16px",
+        left: "16px",
+        zIndex: 2000,
+        width: "320px",
+        maxWidth: "calc(100% - 32px)",
+        pointerEvents: "auto",
       }}
     >
-      <input
-        type="text"
-        className="search-input"
-        placeholder="Search a place in Zamboanga City..."
-        value={query}
-        onChange={handleInputChange}
-        onFocus={() => {
-          if (results.length > 0) setShowResults(true);
-        }}
+      <div
         style={{
-          width: "100%",
-          boxSizing: "border-box",
-          padding: "8px 10px",
-          border: "none",
-          borderRadius: "4px",
-          fontSize: "13px",
-          fontFamily: "Arial, sans-serif",
-          outline: "none",
-          background: "white",
+          position: "relative",
+          background: "rgba(255, 255, 255, 0.75)",
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
+          borderRadius: "10px",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
+          border: "1px solid rgba(255,255,255,0.5)",
+          padding: "6px",
         }}
-      />
-      {showResults && (
-        <div
-          className="search-results"
-          style={{
-            position: "absolute",
-            top: "calc(100% + 4px)",
-            left: 0,
-            right: 0,
-            background: "white",
-            borderRadius: "4px",
-            boxShadow: "0 2px 6px rgba(0,0,0,0.3)",
-            maxHeight: "240px",
-            overflowY: "auto",
-            zIndex: 1001,
-          }}
-        >
-          {loading ? (
-            <div
-              className="search-status"
-              style={{ padding: "8px 10px", color: "#777" }}
-            >
-              Searching...
-            </div>
-          ) : results.length === 0 ? (
-            <div
-              className="search-status"
-              style={{ padding: "8px 10px", color: "#777" }}
-            >
-              No results found
-            </div>
-          ) : (
-            results.map((item, idx) => (
-              <div
-                key={idx}
-                className="search-item"
-                onClick={() => handleSelect(item)}
-                style={{
-                  padding: "8px 10px",
-                  fontSize: "12px",
-                  fontFamily: "Arial, sans-serif",
-                  color: "#222",
-                  borderBottom: "1px solid #eee",
-                }}
-                onMouseEnter={(e) =>
-                  (e.currentTarget.style.background = "#f2f2f2")
-                }
-                onMouseLeave={(e) =>
-                  (e.currentTarget.style.background = "white")
-                }
-              >
-                {item.display_name}
-              </div>
-            ))
-          )}
+      >
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+          <Input
+            type="text"
+            placeholder="Search a place in Zamboanga City…"
+            value={query}
+            onChange={handleInputChange}
+            onFocus={() => {
+              if (results.length > 0) setShowResults(true);
+            }}
+            className="pl-8 h-9 text-sm bg-white/70 border-white/60 focus-visible:bg-white/95 focus-visible:ring-1 focus-visible:ring-primary/40 placeholder:text-muted-foreground/70"
+          />
         </div>
-      )}
+
+        {showResults && (
+          <div
+            style={{
+              position: "absolute",
+              top: "calc(100% + 6px)",
+              left: 0,
+              right: 0,
+              background: "rgba(255, 255, 255, 0.95)",
+              backdropFilter: "blur(12px)",
+              WebkitBackdropFilter: "blur(12px)",
+              borderRadius: "10px",
+              boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
+              border: "1px solid rgba(255,255,255,0.5)",
+              maxHeight: "260px",
+              overflowY: "auto",
+            }}
+          >
+            {loading ? (
+              <div className="px-3 py-2.5 text-xs text-muted-foreground">
+                Searching…
+              </div>
+            ) : results.length === 0 ? (
+              <div className="px-3 py-2.5 text-xs text-muted-foreground">
+                No results found
+              </div>
+            ) : (
+              results.map((item, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => handleSelect(item)}
+                  className="w-full text-left px-3 py-2 text-xs hover:bg-primary/5 active:bg-primary/10 transition-colors border-b border-black/5 last:border-b-0"
+                >
+                  {item.display_name}
+                </button>
+              ))
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -888,13 +974,9 @@ function POILayer({ onFacilities, hiddenFacilities = [] }) {
   }, [onFacilities]);
 
   useEffect(() => {
-    const handleZoomEnd = () => {
-      setCurrentZoom(map.getZoom());
-    };
+    const handleZoomEnd = () => setCurrentZoom(map.getZoom());
     map.on("zoomend", handleZoomEnd);
-    return () => {
-      map.off("zoomend", handleZoomEnd);
-    };
+    return () => map.off("zoomend", handleZoomEnd);
   }, [map]);
 
   const renderFacilities = useCallback(
@@ -1005,22 +1087,15 @@ function POILayer({ onFacilities, hiddenFacilities = [] }) {
         clusterRef.current = markerGroup;
       }
 
-      onFacilitiesRef.current?.(
-        rows.map((row) => ({
-          lat: row.lat,
-          lon: row.lon,
-          name: row.name,
-          type: row.type,
-          addr_street: row.addr_street,
-          addr_city: row.addr_city,
-          phone: row.phone,
-          website: row.website,
-        })),
-      );
       setLoading(false);
     },
     [map, hiddenFacilities],
   );
+
+  const renderFacilitiesRef = useRef(renderFacilities);
+  useEffect(() => {
+    renderFacilitiesRef.current = renderFacilities;
+  }, [renderFacilities]);
 
   useEffect(() => {
     let isMounted = true;
@@ -1037,7 +1112,19 @@ function POILayer({ onFacilities, hiddenFacilities = [] }) {
         if (queryError) throw queryError;
         if (isMounted && data) {
           allFacilitiesRef.current = data;
-          renderFacilities(data, currentZoom);
+          onFacilitiesRef.current?.(
+            data.map((row) => ({
+              lat: row.lat,
+              lon: row.lon,
+              name: row.name,
+              type: row.type,
+              addr_street: row.addr_street,
+              addr_city: row.addr_city,
+              phone: row.phone,
+              website: row.website,
+            })),
+          );
+          renderFacilitiesRef.current?.(data, map.getZoom());
         }
       } catch (err) {
         if (isMounted) {
@@ -1056,7 +1143,7 @@ function POILayer({ onFacilities, hiddenFacilities = [] }) {
         clusterRef.current = null;
       }
     };
-  }, [map, renderFacilities, currentZoom]);
+  }, [map]);
 
   useEffect(() => {
     if (allFacilitiesRef.current.length > 0) {
@@ -1067,12 +1154,7 @@ function POILayer({ onFacilities, hiddenFacilities = [] }) {
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// Evacuation centers layer — reads from public.evacuation_centers.
-// Only rows that have both latitude and longitude are plotted; rows flagged
-// "To be updated" (missing coords) are skipped and counted in the console.
-// ---------------------------------------------------------------------------
-function EvacuationCentersLayer({ onCentersLoaded }) {
+function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
   const map = useMap();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -1080,6 +1162,13 @@ function EvacuationCentersLayer({ onCentersLoaded }) {
   const clusterRef = useRef(null);
   const allCentersRef = useRef([]);
   const onCentersLoadedRef = useRef(onCentersLoaded);
+  const visibleRef = useRef(visible);
+  const [renderTick, setRenderTick] = useState(0);
+
+  useEffect(() => {
+    visibleRef.current = visible;
+    setRenderTick((t) => t + 1);
+  }, [visible]);
 
   useEffect(() => {
     onCentersLoadedRef.current = onCentersLoaded;
@@ -1117,6 +1206,11 @@ function EvacuationCentersLayer({ onCentersLoaded }) {
       if (clusterRef.current) {
         map.removeLayer(clusterRef.current);
         clusterRef.current = null;
+      }
+
+      if (!visibleRef.current) {
+        setLoading(false);
+        return;
       }
 
       const valid = rows
@@ -1191,6 +1285,11 @@ function EvacuationCentersLayer({ onCentersLoaded }) {
     [map],
   );
 
+  const renderCentersRef = useRef(renderCenters);
+  useEffect(() => {
+    renderCentersRef.current = renderCenters;
+  }, [renderCenters]);
+
   useEffect(() => {
     let isMounted = true;
 
@@ -1207,7 +1306,7 @@ function EvacuationCentersLayer({ onCentersLoaded }) {
         if (isMounted && data) {
           allCentersRef.current = data;
           onCentersLoadedRef.current?.(data);
-          renderCenters(data, currentZoom);
+          renderCentersRef.current?.(data, map.getZoom());
         }
       } catch (err) {
         if (isMounted) {
@@ -1226,18 +1325,16 @@ function EvacuationCentersLayer({ onCentersLoaded }) {
         clusterRef.current = null;
       }
     };
-  }, [map, renderCenters, currentZoom]);
+  }, [map]);
 
   useEffect(() => {
     if (allCentersRef.current.length > 0) {
       renderCenters(allCentersRef.current, currentZoom);
     }
-  }, [currentZoom, renderCenters]);
+  }, [currentZoom, renderCenters, renderTick]);
 
   return null;
 }
-
-const ROUTE_COLORS = ["#1a73e8", "#e68a00", "#c62828"];
 
 function findBarangayForPoint(latlng, barangayData) {
   if (!barangayData) return null;
@@ -1253,21 +1350,39 @@ function findBarangayForPoint(latlng, barangayData) {
   };
 }
 
+function evacCenterToFacility(c) {
+  const lat = c.latitude == null ? NaN : Number(c.latitude);
+  const lon = c.longitude == null ? NaN : Number(c.longitude);
+  return {
+    lat,
+    lon,
+    name: c.name,
+    type: EVACUATION_CENTER_TYPE,
+    addr_street: c.location || null,
+    addr_city: c.district || null,
+    phone: null,
+    website: null,
+    _evac: c,
+  };
+}
+
 function RoutingLayer({
   facilities,
-  evacuationCenters, // <-- NEW
+  evacuationCenters,
   onSelectionChange,
   onRequestLocation,
   onRequestReset,
   onRequestSearchSelect,
   onRequestClear,
   onRequestCenter,
-  filterType,
+  selectedTypes,
   cityBoundary,
   barangayData,
   onNearestFacilitiesFound,
   onClearHighlight,
   onLocationChange,
+  mapMode,
+  onBarangaySelect,
 }) {
   const map = useMap();
   const [mode, setMode] = useState("idle");
@@ -1279,6 +1394,21 @@ function RoutingLayer({
   const originBarangay = origin
     ? findBarangayForPoint(origin, barangayData)
     : null;
+
+  const mapModeRef = useRef(mapMode);
+  useEffect(() => {
+    mapModeRef.current = mapMode;
+  }, [mapMode]);
+
+  const barangayDataRef = useRef(barangayData);
+  useEffect(() => {
+    barangayDataRef.current = barangayData;
+  }, [barangayData]);
+
+  const onBarangaySelectRef = useRef(onBarangaySelect);
+  useEffect(() => {
+    onBarangaySelectRef.current = onBarangaySelect;
+  }, [onBarangaySelect]);
 
   useEffect(() => {
     onSelectionChange?.({
@@ -1318,44 +1448,37 @@ function RoutingLayer({
       setErrorMsg(null);
       setOutsideBoundary(false);
       try {
-        // --- Pick the correct source table based on the active filter ---
-        // "Evacuation Center" routes against the evacuation_centers table;
-        // everything else routes against health_facilities.
+        const evacAsFacility = (evacuationCenters || [])
+          .map(evacCenterToFacility)
+          .filter((f) => Number.isFinite(f.lat) && Number.isFinite(f.lon));
+
+        const activeTypes = selectedTypes || [];
+        const healthTypes = activeTypes.filter(
+          (t) => t !== EVACUATION_CENTER_TYPE,
+        );
+        const evacSelected = activeTypes.includes(EVACUATION_CENTER_TYPE);
+
         let filtered;
 
-        if (filterType === EVACUATION_CENTER_TYPE) {
-          filtered = (evacuationCenters || [])
-            .map((c) => {
-              const lat = c.latitude == null ? NaN : Number(c.latitude);
-              const lon = c.longitude == null ? NaN : Number(c.longitude);
-              return {
-                lat,
-                lon,
-                name: c.name,
-                type: EVACUATION_CENTER_TYPE,
-                addr_street: c.location || null,
-                addr_city: c.district || null,
-                phone: null,
-                website: null,
-                // Carry the raw row so the sidebar can render evac fields.
-                _evac: c,
-              };
-            })
-            .filter((f) => Number.isFinite(f.lat) && Number.isFinite(f.lon));
-
-          if (filtered.length === 0) {
-            throw new Error(
-              'No evacuation centers with coordinates are available yet. Some entries are still marked "To be updated".',
+        if (activeTypes.length === 0) {
+          filtered = [...(facilities || []), ...evacAsFacility];
+        } else {
+          const parts = [];
+          if (healthTypes.length > 0) {
+            parts.push(
+              ...(facilities || []).filter((f) => healthTypes.includes(f.type)),
             );
           }
-        } else {
-          filtered = filterType
-            ? facilities.filter((f) => f.type === filterType)
-            : facilities;
-
-          if (!filtered || filtered.length === 0) {
-            throw new Error(`No facilities found for type "${filterType}"`);
+          if (evacSelected) {
+            parts.push(...evacAsFacility);
           }
+          filtered = parts;
+        }
+
+        if (filtered.length === 0) {
+          const names =
+            activeTypes.length === 0 ? "facilities" : activeTypes.join(", ");
+          throw new Error(`No matching ${names} available`);
         }
 
         const originCoords = [latlng.lat, latlng.lng];
@@ -1388,8 +1511,8 @@ function RoutingLayer({
     },
     [
       facilities,
-      evacuationCenters, // <-- NEW
-      filterType,
+      evacuationCenters,
+      selectedTypes,
       onNearestFacilitiesFound,
       onClearHighlight,
     ],
@@ -1434,6 +1557,13 @@ function RoutingLayer({
 
   useMapEvents({
     click(e) {
+      if (mapModeRef.current === "barangay") {
+        const b = findBarangayForPoint(e.latlng, barangayDataRef.current);
+        if (b) {
+          onBarangaySelectRef.current?.(b);
+        }
+        return;
+      }
       handleNewOrigin(e.latlng);
     },
   });
@@ -1495,15 +1625,16 @@ function RoutingLayer({
     onRequestCenter?.(centerLocation);
   }, [centerLocation, onRequestCenter]);
 
-  // Re-run the search whenever the active filter changes, OR when the
-  // evacuation-centers data finishes loading (in case the user selected
-  // "Evacuation Center" before the table was fetched).
+  const includesEvac =
+    selectedTypes.length === 0 ||
+    selectedTypes.includes(EVACUATION_CENTER_TYPE);
+
   useEffect(() => {
-    if (origin && mode !== "loading") {
-      runSearch(origin);
-    }
+    if (!origin) return;
+    if (includesEvac && evacuationCenters.length === 0) return;
+    runSearch(origin);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterType, evacuationCenters]);
+  }, [selectedTypes, evacuationCenters]);
 
   useEffect(() => {
     if (!origin) {
@@ -1579,17 +1710,30 @@ function RoutingLayer({
   return null;
 }
 
-function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded, hideFSI }) {
+function ZamboangaMask({
+  onBoundaryLoaded,
+  onBarangaysLoaded,
+  hideFSI,
+  mapMode,
+  selectedBarangayName,
+}) {
   const map = useMap();
   const barangayLayerRef = useRef(null);
   const maskLayerRef = useRef(null);
   const borderLayerRef = useRef(null);
   const maritimeLayerRef = useRef(null);
+  const barangayLayersByNameRef = useRef({});
+  const prevSelectedLayerRef = useRef(null);
 
   const hideFSIRef = useRef(hideFSI);
   useEffect(() => {
     hideFSIRef.current = hideFSI;
   }, [hideFSI]);
+
+  const mapModeRef = useRef(mapMode);
+  useEffect(() => {
+    mapModeRef.current = mapMode;
+  }, [mapMode]);
 
   useEffect(() => {
     let maskLayer, borderLayer, barangayLayer, maritimeLayer;
@@ -1617,12 +1761,14 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded, hideFSI }) {
         },
       };
 
+      // Outer mask (gray outside the city) — keep light so it doesn't
+      // overpower the FSI fill.
       maskLayer = L.geoJSON(maskGeoJSON, {
         style: {
           color: "transparent",
           weight: 0,
           fillColor: "#d9d9d9",
-          fillOpacity: 0.15,
+          fillOpacity: 0.12,
         },
         interactive: false,
       }).addTo(map);
@@ -1687,17 +1833,18 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded, hideFSI }) {
           return {
             color: "#ffffff",
             weight: 1,
-            opacity: 0.6,
+            opacity: FSI_OPACITY.borderOpacity,
             fillColor: RISK_LEVELS[risk] || RISK_LEVELS["Low Risk"],
-            fillOpacity: hideFSIRef.current ? 0 : 0.15,
+            fillOpacity: FSI_OPACITY.normal,
           };
         },
-        interactive: !hideFSIRef.current,
+        interactive: true,
         onEachFeature: (feature, layer) => {
-          if (hideFSIRef.current) return;
           const name = feature.properties.adm4_name;
           const risk = feature.properties.fsi_risk;
           const population = feature.properties.population;
+          barangayLayersByNameRef.current[name] = layer;
+
           const populationLine =
             population != null
               ? `Population: ${population.toLocaleString()}`
@@ -1710,76 +1857,37 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded, hideFSI }) {
               direction: "center",
               className: "barangay-label",
               sticky: true,
-              interactive: true,
+              interactive: false,
             },
           );
 
-          let longPressTimer = null;
-          let isLongPress = false;
           let clickOpened = false;
 
           layer.on("mouseover", function () {
-            this.setStyle({ fillOpacity: 0.3, weight: 2 });
-            if (!isLongPress && !clickOpened) {
-              this.openTooltip();
+            if (mapModeRef.current === "barangay") {
+              if (prevSelectedLayerRef.current !== this) {
+                this.setStyle({
+                  fillOpacity: FSI_OPACITY.hover,
+                  weight: 2,
+                });
+              }
+              return;
             }
+            this.setStyle({ fillOpacity: FSI_OPACITY.hover, weight: 2 });
+            if (!clickOpened) this.openTooltip();
           });
 
           layer.on("mouseout", function () {
-            if (longPressTimer) {
-              clearTimeout(longPressTimer);
-              longPressTimer = null;
-            }
-            this.setStyle({ fillOpacity: 0.15, weight: 1 });
-            if (!clickOpened) {
-              this.closeTooltip();
-            }
-            isLongPress = false;
+            if (prevSelectedLayerRef.current === this) return;
+            this.setStyle({
+              fillOpacity: FSI_OPACITY.normal,
+              weight: 1,
+            });
+            if (!clickOpened) this.closeTooltip();
           });
 
-          layer.on("mousedown", function (e) {
-            clickOpened = false;
-            isLongPress = false;
-            if (e.originalEvent) {
-              e.originalEvent.preventDefault();
-            }
-            longPressTimer = setTimeout(() => {
-              isLongPress = true;
-              this.closeTooltip();
-              clickOpened = false;
-            }, 400);
-          });
-
-          layer.on("mouseup", function (e) {
-            if (longPressTimer) {
-              clearTimeout(longPressTimer);
-              longPressTimer = null;
-            }
-            if (!isLongPress) {
-              const tooltip = this.getTooltip();
-              if (tooltip) {
-                if (tooltip.isOpen()) {
-                  this.closeTooltip();
-                  clickOpened = false;
-                } else {
-                  this.openTooltip();
-                  clickOpened = true;
-                }
-              }
-            }
-            isLongPress = false;
-          });
-
-          layer.on("contextmenu", function (e) {
-            if (e.originalEvent) {
-              e.originalEvent.preventDefault();
-            }
-            this.closeTooltip();
-            clickOpened = false;
-            isLongPress = true;
-          });
-
-          layer.on("click", function (e) {
+          layer.on("click", function () {
+            if (mapModeRef.current === "barangay") return;
             const tooltip = this.getTooltip();
             if (tooltip) {
               if (tooltip.isOpen()) {
@@ -1814,6 +1922,40 @@ function ZamboangaMask({ onBoundaryLoaded, onBarangaysLoaded, hideFSI }) {
       }
     }
   }, [map, hideFSI]);
+
+  useEffect(() => {
+    if (prevSelectedLayerRef.current) {
+      prevSelectedLayerRef.current.setStyle({
+        color: "#ffffff",
+        weight: 1,
+        opacity: FSI_OPACITY.borderOpacity,
+        fillOpacity: FSI_OPACITY.normal,
+      });
+      prevSelectedLayerRef.current = null;
+    }
+
+    if (!selectedBarangayName) return;
+    const layer = barangayLayersByNameRef.current[selectedBarangayName];
+    if (!layer) return;
+
+    layer.setStyle({
+      color: "#1a73e8",
+      weight: 3,
+      opacity: 1,
+      fillOpacity: FSI_OPACITY.selected,
+    });
+    if (layer.bringToFront) layer.bringToFront();
+    prevSelectedLayerRef.current = layer;
+
+    if (layer.getBounds) {
+      map.fitBounds(layer.getBounds(), {
+        padding: [40, 40],
+        maxZoom: 14,
+        animate: true,
+        duration: 0.5,
+      });
+    }
+  }, [selectedBarangayName, map]);
 
   return null;
 }
@@ -1975,8 +2117,6 @@ function QGISRasterLayer({
         onLoadError?.(layerKey, null);
         loadAttemptedRef.current = true;
 
-        console.log(`Loading ${layerKey} from:`, config.path);
-
         const response = await fetch(config.path);
         if (!response.ok) {
           throw new Error(
@@ -2001,8 +2141,6 @@ function QGISRasterLayer({
         } catch {
           noDataValue = null;
         }
-
-        console.log(`Image ${layerKey}:`, { width, height, bbox });
 
         if (cancelled || !isMountedRef.current) return;
 
@@ -2066,10 +2204,6 @@ function QGISRasterLayer({
           clipCtx.drawImage(canvas, 0, 0);
           clipCtx.restore();
           outputCanvas = clippedCanvas;
-        } else {
-          console.warn(
-            `City boundary not yet loaded — rendering ${layerKey} unclipped this time.`,
-          );
         }
 
         const dataUrl = outputCanvas.toDataURL("image/png");
@@ -2081,10 +2215,6 @@ function QGISRasterLayer({
 
         const bottomLeft = utmToLatLng(west, south);
         const topRight = utmToLatLng(east, north);
-
-        console.log(
-          `Converted bounds: [${bottomLeft.lat}, ${bottomLeft.lng}] to [${topRight.lat}, ${topRight.lng}]`,
-        );
 
         if (cancelled || !isMountedRef.current) return;
 
@@ -2124,8 +2254,6 @@ function QGISRasterLayer({
           ],
           { padding: [50, 50] },
         );
-
-        console.log(`Successfully loaded ${layerKey}`);
       } catch (error) {
         console.error(`Failed to load ${layerKey} (${config.path}):`, error);
         if (!cancelled && isMountedRef.current) {
@@ -2357,19 +2485,415 @@ function QGISLayers({
   );
 }
 
-const FloodMap = forwardRef(function FloodMap(
-  {
-    onSelectionChange,
-    onRequestLocation,
-    onRequestReset,
-    filterType,
-    onCityBoundaryLoaded,
-  },
-  ref,
-) {
+function BarangayCard({ barangay, onClear }) {
+  if (!barangay) return null;
+  const { name, risk, population } = barangay;
+  const color = FSI_COLORS[risk] || "#9e9e9e";
+  const message =
+    FSI_MESSAGES[risk] ||
+    "Flood susceptibility data unavailable for this area.";
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex justify-between items-start gap-2">
+          <div>
+            <div className="text-xs uppercase tracking-wide text-muted-foreground">
+              Selected Barangay
+            </div>
+            <CardTitle className="text-base leading-tight">{name}</CardTitle>
+          </div>
+          <Button variant="outline" size="sm" onClick={onClear}>
+            Clear
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <div className="flex justify-between items-center border-b pb-2">
+          <span className="text-muted-foreground">Flood Susceptibility</span>
+          <span
+            className="text-xs font-bold px-2 py-0.5 rounded-full text-white"
+            style={{ backgroundColor: color }}
+          >
+            {risk}
+          </span>
+        </div>
+        <div className="flex justify-between border-b pb-2">
+          <span className="text-muted-foreground">Population</span>
+          <span className="font-medium">
+            {population != null ? population.toLocaleString() : "N/A"}
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          {message}
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function FacilityDetailsPanel({
+  selection,
+  onUseMyLocation,
+  facilityTypes,
+  selectedTypes,
+  onSelectAllTypes,
+  onToggleType,
+  mapMode,
+  selectedBarangay,
+  onClearBarangay,
+}) {
+  const { mode, results, errorMsg, origin, originBarangay } = selection;
+
+  return (
+    <div className="space-y-4">
+      {mapMode === "barangay" ? (
+        <>
+          {selectedBarangay ? (
+            <BarangayCard
+              barangay={selectedBarangay}
+              onClear={onClearBarangay}
+            />
+          ) : (
+            <Card className="border-dashed bg-muted/50">
+              <CardContent className="p-4 text-center text-sm text-muted-foreground">
+                Click on a barangay on the map to view its flood susceptibility
+                and population details.
+              </CardContent>
+            </Card>
+          )}
+        </>
+      ) : (
+        <>
+          <Button
+            onClick={onUseMyLocation}
+            disabled={mode === "loading"}
+            className="w-full"
+            size="sm"
+          >
+            {mode === "loading" ? (
+              <>
+                <MapPinOff className="mr-2 h-4 w-4 animate-pulse" />
+                Searching…
+              </>
+            ) : (
+              <>
+                <MapPin className="mr-2 h-4 w-4" />
+                Use my location
+              </>
+            )}
+          </Button>
+
+          {facilityTypes.length > 0 && (
+            <Card>
+              <CardContent className="p-3">
+                <h4 className="text-xs uppercase tracking-wide text-muted-foreground mb-2">
+                  Facility Type{" "}
+                  {selectedTypes.length > 0 && (
+                    <span className="text-[10px] normal-case tracking-normal text-primary">
+                      ({selectedTypes.length} selected)
+                    </span>
+                  )}
+                </h4>
+                <div className="flex flex-wrap gap-1">
+                  <Button
+                    variant={selectedTypes.length === 0 ? "default" : "outline"}
+                    size="sm"
+                    onClick={onSelectAllTypes}
+                    title="Show all health facilities and evacuation centers"
+                  >
+                    All
+                  </Button>
+                  {facilityTypes.map((type) => {
+                    const isActive = selectedTypes.includes(type);
+                    return (
+                      <Button
+                        key={type}
+                        variant={isActive ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => onToggleType(type)}
+                        title={
+                          isActive
+                            ? `Remove ${type} from filter`
+                            : `Add ${type} to filter`
+                        }
+                      >
+                        {type}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {mode === "idle" && (
+            <Card className="border-dashed bg-muted/50">
+              <CardContent className="p-4 text-center text-sm text-muted-foreground">
+                {selectedTypes.length > 0
+                  ? "Map filtered. Click the map or use your location to find the nearest matching facilities."
+                  : "Click the map or use your location to find the nearest health facilities or evacuation centers."}
+              </CardContent>
+            </Card>
+          )}
+          {mode === "loading" && <SkeletonFacilityDetails />}
+          {mode === "error" && (
+            <Card className="border-destructive/50 bg-destructive/5">
+              <CardContent className="p-4 text-sm text-destructive">
+                {errorMsg}
+              </CardContent>
+            </Card>
+          )}
+          {mode === "done" && results.length > 0 && (
+            <div className="space-y-4">
+              <FsiNotice originBarangay={originBarangay} />
+              <OriginCard origin={origin} />
+              {results.map((item, index) => (
+                <FacilityCard
+                  key={
+                    (item.facility._evac?.id ?? item.facility.name) +
+                    item.facility.lat
+                  }
+                  item={item}
+                  rank={index + 1}
+                />
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function SkeletonFacilityDetails() {
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex gap-3">
+            <Skeleton className="h-6 w-6 rounded-full" />
+            <div className="space-y-2 flex-1">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-4 w-3/4" />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      {[1, 2, 3].map((i) => (
+        <Card key={i}>
+          <CardHeader className="pb-2">
+            <Skeleton className="h-5 w-3/5" />
+            <Skeleton className="h-3 w-1/3" />
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            <div className="flex justify-between border-b pb-2">
+              <Skeleton className="h-4 w-16" />
+              <Skeleton className="h-4 w-20" />
+            </div>
+            <div className="flex justify-between border-b pb-2">
+              <Skeleton className="h-4 w-20" />
+              <Skeleton className="h-4 w-24" />
+            </div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function OriginCard({ origin }) {
+  const [placeName, setPlaceName] = useState(null);
+  const [loadingName, setLoadingName] = useState(false);
+
+  useEffect(() => {
+    if (!origin) {
+      setPlaceName(null);
+      return;
+    }
+    let cancelled = false;
+    setLoadingName(true);
+    setPlaceName(null);
+    reverseGeocode(origin.lat, origin.lng)
+      .then((name) => {
+        if (!cancelled) setPlaceName(name);
+      })
+      .catch(() => {
+        if (!cancelled)
+          setPlaceName(`${origin.lat.toFixed(5)}, ${origin.lng.toFixed(5)}`);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingName(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [origin]);
+
+  return (
+    <Card>
+      <CardContent className="p-4 flex gap-3 items-center">
+        <span className="text-2xl">📍</span>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-muted-foreground">
+            Your location
+          </div>
+          <div className="text-sm font-medium">
+            {loadingName ? "Locating…" : placeName || "—"}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function FsiNotice({ originBarangay }) {
+  if (!originBarangay) return null;
+  const { name, risk, population } = originBarangay;
+  const color = FSI_COLORS[risk] || "#9e9e9e";
+  const message =
+    FSI_MESSAGES[risk] ||
+    "Flood susceptibility data unavailable for this area.";
+  return (
+    <Alert style={{ borderColor: color }} className="border-l-4">
+      <AlertTitle className="flex items-center justify-between">
+        <span>Flood Susceptibility — Barangay {name}</span>
+        <span
+          className="text-xs font-bold px-2 py-0.5 rounded-full text-white text-center"
+          style={{ backgroundColor: color }}
+        >
+          {risk}
+        </span>
+      </AlertTitle>
+      <AlertDescription>
+        {message}
+        <div className="mt-2 flex items-center gap-1.5 text-sm font-medium text-foreground">
+          <Users className="h-3.5 w-3.5" />
+          Population: {population != null ? population.toLocaleString() : "N/A"}
+        </div>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function FacilityCard({ item, rank }) {
+  const { facility, distanceMeters, durationSeconds } = item;
+  const color = ROUTE_COLORS[rank - 1] || "#9e9e9e";
+
+  const evac = facility._evac;
+  const isEvac = Boolean(evac) || facility.type === EVACUATION_CENTER_TYPE;
+
+  return (
+    <Card className="relative">
+      <div
+        className="absolute top-0 left-0 w-1 h-full rounded-l-lg"
+        style={{ backgroundColor: color }}
+      />
+      <CardHeader className="pb-2 pl-5">
+        <div className="flex justify-between items-start">
+          <CardTitle className="text-base">{facility.name}</CardTitle>
+          <span
+            className="text-xs font-bold px-2 py-0.5 rounded-full text-white"
+            style={{ backgroundColor: color }}
+          >
+            #{rank}
+          </span>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          {isEvac ? "⛺ Evacuation Center" : facility.type}
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm pl-5">
+        <div className="flex justify-between border-b pb-2">
+          <span className="text-muted-foreground">Distance</span>
+          <span className="font-medium">
+            {(distanceMeters / 1000).toFixed(2)} km
+          </span>
+        </div>
+        <div className="flex justify-between border-b pb-2">
+          <span className="text-muted-foreground">Travel time</span>
+          <span className="font-medium">
+            {Math.round(durationSeconds / 60)} min
+          </span>
+        </div>
+
+        {isEvac ? (
+          <>
+            {evac?.location && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Location</span>
+                <span className="font-medium text-right">{evac.location}</span>
+              </div>
+            )}
+            {evac?.district && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">District</span>
+                <span className="font-medium text-right">{evac.district}</span>
+              </div>
+            )}
+            {evac?.floor_area_sqm != null && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Floor area</span>
+                <span className="font-medium text-right">
+                  {evac.floor_area_sqm} sqm
+                </span>
+              </div>
+            )}
+            {evac?.proximity && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Proximity</span>
+                <span className="font-medium text-right">{evac.proximity}</span>
+              </div>
+            )}
+            {evac?.remarks && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Remarks</span>
+                <span className="font-medium text-right text-amber-600">
+                  {evac.remarks}
+                </span>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {facility.addr_street && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Address</span>
+                <span className="font-medium text-right">
+                  {facility.addr_street}
+                </span>
+              </div>
+            )}
+            {facility.phone && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Phone</span>
+                <span className="font-medium">{facility.phone}</span>
+              </div>
+            )}
+            {facility.website && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Website</span>
+                <a
+                  href={facility.website}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium underline text-primary"
+                >
+                  Visit
+                </a>
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function FloodMap() {
   const position = [7.0736, 122.01];
   const [facilities, setFacilities] = useState([]);
-  const [evacuationCenters, setEvacuationCenters] = useState([]); // <-- NEW
+  const [evacuationCenters, setEvacuationCenters] = useState([]);
   const [cityBoundary, setCityBoundary] = useState(null);
   const [barangayData, setBarangayData] = useState(null);
   const [hiddenFacilities, setHiddenFacilities] = useState([]);
@@ -2377,45 +2901,78 @@ const FloodMap = forwardRef(function FloodMap(
   const [activeQGISLayers, setActiveQGISLayers] = useState([]);
   const [qgisLayerErrors, setQgisLayerErrors] = useState({});
   const [qgisLayerLoading, setQgisLayerLoading] = useState({});
+  const [selection, setSelection] = useState({
+    mode: "idle",
+    results: [],
+    errorMsg: null,
+    origin: null,
+    outsideBoundary: false,
+    originBarangay: null,
+    errorType: null,
+  });
+  const [facilityTypes, setFacilityTypes] = useState([]);
+
+  const [selectedTypes, setSelectedTypes] = useState([]);
+
+  const [mapMode, setMapMode] = useState("marker");
+  const [selectedBarangay, setSelectedBarangay] = useState(null);
+
   const searchSelectRef = useRef(null);
   const clearLocationRef = useRef(null);
   const centerLocationRef = useRef(null);
+  const locationHandlerRef = useRef(null);
+  const resetHandlerRef = useRef(null);
   const qgisRasterDataRef = useRef({});
 
   const hasQGISLayersActive = activeQGISLayers.length > 0;
 
-  const handleBoundaryLoaded = useCallback(
-    (feature) => {
-      setCityBoundary(feature);
-      onCityBoundaryLoaded?.(feature);
-    },
-    [onCityBoundaryLoaded],
-  );
+  useEffect(() => {
+    supabase
+      .from("health_facilities")
+      .select("type")
+      .then(({ data, error }) => {
+        const healthTypes =
+          !error && data ? data.map((item) => item.type).filter(Boolean) : [];
+        const sortedHealth = [...new Set(healthTypes)].filter(Boolean).sort();
+        setFacilityTypes([...sortedHealth, EVACUATION_CENTER_TYPE]);
+      });
+  }, []);
+
+  const handleBoundaryLoaded = useCallback((feature) => {
+    setCityBoundary(feature);
+  }, []);
 
   const handleBarangaysLoaded = useCallback((data) => {
     setBarangayData(data);
+  }, []);
+
+  const handleSelectionChange = useCallback((data) => {
+    setSelection(data);
   }, []);
 
   const handleRequestSearchSelect = useCallback((fn) => {
     searchSelectRef.current = fn;
   }, []);
 
+  const handleRequestLocation = useCallback((fn) => {
+    locationHandlerRef.current = fn;
+  }, []);
+
+  const handleRequestReset = useCallback((fn) => {
+    resetHandlerRef.current = fn;
+  }, []);
+
   const handleNearestFacilitiesFound = useCallback(
     (nearestFacilities) => {
-      // Don't touch health-POI visibility when routing to evac centers —
-      // those are a completely separate dataset.
-      if (filterType === EVACUATION_CENTER_TYPE) return;
-
-      const allFacilities = facilities;
       const nearestIds = new Set(
         nearestFacilities.map((f) => `${f.lat},${f.lon}`),
       );
-      const toHide = allFacilities.filter(
+      const toHide = facilities.filter(
         (f) => !nearestIds.has(`${f.lat},${f.lon}`),
       );
       setHiddenFacilities(toHide);
     },
-    [facilities, filterType],
+    [facilities],
   );
 
   const handleClearHighlight = useCallback(() => {
@@ -2444,25 +3001,19 @@ const FloodMap = forwardRef(function FloodMap(
   }, []);
 
   const handleClear = useCallback(() => {
-    if (clearLocationRef.current) {
-      clearLocationRef.current();
-    }
+    clearLocationRef.current?.();
   }, []);
 
   const handleCenter = useCallback(() => {
-    if (centerLocationRef.current) {
-      centerLocationRef.current();
-    }
+    centerLocationRef.current?.();
   }, []);
 
   const handleLayerToggle = useCallback((layerKey) => {
-    setActiveQGISLayers((prev) => {
-      if (prev.includes(layerKey)) {
-        return prev.filter((key) => key !== layerKey);
-      } else {
-        return [...prev, layerKey];
-      }
-    });
+    setActiveQGISLayers((prev) =>
+      prev.includes(layerKey)
+        ? prev.filter((key) => key !== layerKey)
+        : [...prev, layerKey],
+    );
   }, []);
 
   const handleQGISLoadingChange = useCallback((layerKey, isLoading) => {
@@ -2472,51 +3023,16 @@ const FloodMap = forwardRef(function FloodMap(
   const handleQGISLoadError = useCallback((layerKey, message) => {
     setQgisLayerErrors((prev) => {
       const next = { ...prev };
-      if (message) {
-        next[layerKey] = message;
-      } else {
-        delete next[layerKey];
-      }
+      if (message) next[layerKey] = message;
+      else delete next[layerKey];
       return next;
     });
   }, []);
 
   const handleRasterLoaded = useCallback((layerKey, data) => {
-    if (data) {
-      qgisRasterDataRef.current[layerKey] = data;
-    } else {
-      delete qgisRasterDataRef.current[layerKey];
-    }
+    if (data) qgisRasterDataRef.current[layerKey] = data;
+    else delete qgisRasterDataRef.current[layerKey];
   }, []);
-
-  useImperativeHandle(ref, () => ({
-    searchLocation: (latlng) => {
-      searchSelectRef.current?.(latlng);
-    },
-    clearHighlight: () => {
-      setHiddenFacilities([]);
-    },
-    clearLocation: () => {
-      if (clearLocationRef.current) {
-        clearLocationRef.current();
-      }
-    },
-    centerLocation: () => {
-      if (centerLocationRef.current) {
-        centerLocationRef.current();
-      }
-    },
-    toggleLayer: (layerKey) => {
-      handleLayerToggle(layerKey);
-    },
-  }));
-
-  const handleSelectionChange = useCallback(
-    (data) => {
-      onSelectionChange?.(data);
-    },
-    [onSelectionChange],
-  );
 
   const handleRequestClear = useCallback((fn) => {
     clearLocationRef.current = fn;
@@ -2526,125 +3042,227 @@ const FloodMap = forwardRef(function FloodMap(
     centerLocationRef.current = fn;
   }, []);
 
+  const handleSearchSelect = useCallback((latlng) => {
+    searchSelectRef.current?.(latlng);
+  }, []);
+
+  const handleUseMyLocationClick = () => {
+    locationHandlerRef.current?.();
+  };
+
+  const handleAlertClose = () => {
+    resetHandlerRef.current?.();
+    setSelection((prev) => ({
+      ...prev,
+      outsideBoundary: false,
+      mode: "idle",
+      errorType: null,
+    }));
+  };
+
+  const handleModeChange = useCallback((newMode) => {
+    setMapMode(newMode);
+    if (newMode === "marker") {
+      setSelectedBarangay(null);
+    }
+  }, []);
+
+  const handleBarangaySelect = useCallback((barangay) => {
+    setSelectedBarangay(barangay);
+  }, []);
+
+  const handleClearBarangay = useCallback(() => {
+    setSelectedBarangay(null);
+  }, []);
+
+  const handleSelectAllTypes = useCallback(() => {
+    setSelectedTypes([]);
+  }, []);
+
+  const handleToggleType = useCallback((type) => {
+    setSelectedTypes((prev) =>
+      prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type],
+    );
+  }, []);
+
+  const effectiveHiddenFacilities = useMemo(() => {
+    const hiddenIds = new Set();
+
+    if (selectedTypes.length > 0) {
+      const healthTypes = selectedTypes.filter(
+        (t) => t !== EVACUATION_CENTER_TYPE,
+      );
+      facilities.forEach((f) => {
+        if (healthTypes.length === 0 || !healthTypes.includes(f.type)) {
+          hiddenIds.add(`${f.lat},${f.lon}`);
+        }
+      });
+    }
+
+    hiddenFacilities.forEach((f) => hiddenIds.add(`${f.lat},${f.lon}`));
+
+    return facilities.filter((f) => hiddenIds.has(`${f.lat},${f.lon}`));
+  }, [facilities, selectedTypes, hiddenFacilities]);
+
+  const showEvacCenters =
+    selectedTypes.length === 0 ||
+    selectedTypes.includes(EVACUATION_CENTER_TYPE);
+
   return (
-    <div style={{ position: "relative", height: "100%", width: "100%" }}>
-      <style>{`
-        .barangay-label {
-          background: rgba(0,0,0,0.7);
-          border: none;
-          border-radius: 4px;
-          color: #ffffff;
-          font-size: 11px;
-          font-weight: 500;
-          padding: 3px 7px;
-          white-space: nowrap;
-        }
-        .barangay-label::before {
-          display: none;
-        }
-        .custom-poi-icon {
-          background: none;
-          border: none;
-        }
-        .search-item:last-child {
-          border-bottom: none;
-        }
-        .search-item:hover {
-          background: #f2f2f2;
-        }
-        .leaflet-tooltip {
-          pointer-events: auto !important;
-        }
-        .leaflet-control-container .leaflet-bottom .leaflet-right {
-          display: flex !important;
-          flex-direction: row !important;
-          gap: 8px !important;
-          margin-bottom: 20px !important;
-        }
-        .leaflet-control-container .leaflet-bottom .leaflet-right .leaflet-control {
-          margin: 0 !important;
-        }
-        .custom-cluster-icon {
-          background: transparent !important;
-          border: none !important;
-        }
-        .custom-cluster-icon div {
-          background: transparent !important;
-          border: none !important;
-        }
-        .marker-cluster {
-          background: transparent !important;
-          border: none !important;
-          box-shadow: none !important;
-        }
-        .marker-cluster div {
-          background: transparent !important;
-          border: none !important;
-          box-shadow: none !important;
-        }
-      `}</style>
-      <MapContainer
-        center={position}
-        zoom={10}
-        minZoom={3}
-        scrollWheelZoom={true}
-        zoomControl={false}
-        style={{ height: "100%", width: "100%" }}
+    <div className="flex w-full h-screen">
+      <div className="w-3/4 h-full">
+        <div style={{ position: "relative", height: "100%", width: "100%" }}>
+          <style>{`
+            .barangay-label {
+              background: rgba(0,0,0,0.75);
+              border: none;
+              border-radius: 4px;
+              color: #ffffff;
+              font-size: 11px;
+              font-weight: 500;
+              padding: 3px 7px;
+              white-space: nowrap;
+            }
+            .barangay-label::before { display: none; }
+            .custom-poi-icon { background: none; border: none; }
+            .search-item:last-child { border-bottom: none; }
+            .search-item:hover { background: #f2f2f2; }
+            .leaflet-tooltip { pointer-events: none !important; }
+            .leaflet-control-container .leaflet-bottom .leaflet-right {
+              display: flex !important;
+              flex-direction: row !important;
+              gap: 8px !important;
+              margin-bottom: 20px !important;
+            }
+            .leaflet-control-container .leaflet-bottom .leaflet-right .leaflet-control {
+              margin: 0 !important;
+            }
+            .custom-cluster-icon { background: transparent !important; border: none !important; }
+            .custom-cluster-icon div { background: transparent !important; border: none !important; }
+            .marker-cluster {
+              background: transparent !important;
+              border: none !important;
+              box-shadow: none !important;
+            }
+            .marker-cluster div {
+              background: transparent !important;
+              border: none !important;
+              box-shadow: none !important;
+            }
+          `}</style>
+          <MapContainer
+            center={position}
+            zoom={10}
+            minZoom={3}
+            scrollWheelZoom={true}
+            zoomControl={false}
+            style={{ height: "100%", width: "100%" }}
+          >
+            <TileLayer
+              attribution="Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community"
+              url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            />
+            <ZamboangaMask
+              onBoundaryLoaded={handleBoundaryLoaded}
+              onBarangaysLoaded={handleBarangaysLoaded}
+              hideFSI={hasQGISLayersActive}
+              mapMode={mapMode}
+              selectedBarangayName={selectedBarangay?.name || null}
+            />
+            <POILayer
+              onFacilities={setFacilities}
+              hiddenFacilities={effectiveHiddenFacilities}
+            />
+            <EvacuationCentersLayer
+              onCentersLoaded={setEvacuationCenters}
+              visible={showEvacCenters}
+            />
+            <RoutingLayer
+              facilities={facilities}
+              evacuationCenters={evacuationCenters}
+              onSelectionChange={handleSelectionChange}
+              onRequestLocation={handleRequestLocation}
+              onRequestReset={handleRequestReset}
+              onRequestSearchSelect={handleRequestSearchSelect}
+              onRequestClear={handleRequestClear}
+              onRequestCenter={handleRequestCenter}
+              selectedTypes={selectedTypes}
+              cityBoundary={cityBoundary}
+              barangayData={barangayData}
+              onNearestFacilitiesFound={handleNearestFacilitiesFound}
+              onClearHighlight={handleClearHighlight}
+              onLocationChange={handleLocationChange}
+              mapMode={mapMode}
+              onBarangaySelect={handleBarangaySelect}
+            />
+            <MapControls
+              onLocate={handleLocate}
+              onClear={handleClear}
+              onCenterLocation={handleCenter}
+              hasLocation={hasLocation}
+            />
+            <LegendControl />
+          </MapContainer>
+
+          <MapModeControl mode={mapMode} onModeChange={handleModeChange} />
+
+          <MapSearchControl
+            cityBoundary={cityBoundary}
+            onSelectLocation={handleSearchSelect}
+          />
+        </div>
+      </div>
+
+      <div className="w-1/4 h-full bg-background p-6 overflow-y-auto border-l">
+        <FacilityDetailsPanel
+          selection={selection}
+          onUseMyLocation={handleUseMyLocationClick}
+          facilityTypes={facilityTypes}
+          selectedTypes={selectedTypes}
+          onSelectAllTypes={handleSelectAllTypes}
+          onToggleType={handleToggleType}
+          mapMode={mapMode}
+          selectedBarangay={selectedBarangay}
+          onClearBarangay={handleClearBarangay}
+        />
+      </div>
+
+      <AlertDialog
+        open={selection.outsideBoundary}
+        onOpenChange={(open) => {
+          if (!open) handleAlertClose();
+        }}
       >
-        <TileLayer
-          attribution="Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community"
-          url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-        />
-        <ZamboangaMask
-          onBoundaryLoaded={handleBoundaryLoaded}
-          onBarangaysLoaded={handleBarangaysLoaded}
-          hideFSI={hasQGISLayersActive}
-        />
-        {/* <QGISLayers
-          activeLayers={activeQGISLayers}
-          cityBoundary={cityBoundary}
-          onLoadingChange={handleQGISLoadingChange}
-          onLoadError={handleQGISLoadError}
-          onRasterLoaded={handleRasterLoaded}
-        />
-        <QGISHoverTooltip rasterDataRef={qgisRasterDataRef} />
-        <QGISLayerControl
-          onLayerToggle={handleLayerToggle}
-          activeLayers={activeQGISLayers}
-          layerErrors={qgisLayerErrors}
-          layerLoading={qgisLayerLoading}
-        /> */}
-        <POILayer
-          onFacilities={setFacilities}
-          hiddenFacilities={hiddenFacilities}
-        />
-        <EvacuationCentersLayer onCentersLoaded={setEvacuationCenters} />
-        <RoutingLayer
-          facilities={facilities}
-          evacuationCenters={evacuationCenters}
-          onSelectionChange={handleSelectionChange}
-          onRequestLocation={onRequestLocation}
-          onRequestReset={onRequestReset}
-          onRequestSearchSelect={handleRequestSearchSelect}
-          onRequestClear={handleRequestClear}
-          onRequestCenter={handleRequestCenter}
-          filterType={filterType}
-          cityBoundary={cityBoundary}
-          barangayData={barangayData}
-          onNearestFacilitiesFound={handleNearestFacilitiesFound}
-          onClearHighlight={handleClearHighlight}
-          onLocationChange={handleLocationChange}
-        />
-        <MapControls
-          onLocate={handleLocate}
-          onClear={handleClear}
-          onCenterLocation={handleCenter}
-          hasLocation={hasLocation}
-        />
-        <LegendControl />
-      </MapContainer>
+        <AlertDialogContent className="z-[9999]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {selection.errorType === "seawater"
+                ? "Seawater Location"
+                : "Outside Zamboanga City"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {selection.errorType === "seawater" ? (
+                <div className="flex items-center gap-2">
+                  <Waves className="h-5 w-5 text-blue-500" />
+                  <span>
+                    This location appears to be in the seawater. Please select a
+                    location on land within Zamboanga City to find nearby
+                    facilities.
+                  </span>
+                </div>
+              ) : (
+                selection.errorMsg ||
+                "Please select a location within the city boundary."
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={handleAlertClose}>OK</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
-});
+}
 
 export default FloodMap;
