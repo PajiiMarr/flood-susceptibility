@@ -51,7 +51,6 @@ const RISK_LEVELS = {
   "Low Risk": "#91bfdb",
 };
 
-// Fill opacities tuned so risk colors are clearly distinguishable
 const FSI_OPACITY = {
   normal: 0.6,
   hover: 0.78,
@@ -1776,8 +1775,6 @@ function ZamboangaMask({
         },
       };
 
-      // Outer mask (gray outside the city) — keep light so it doesn't
-      // overpower the FSI fill.
       maskLayer = L.geoJSON(maskGeoJSON, {
         style: {
           color: "transparent",
@@ -2606,12 +2603,7 @@ function FacilityDetailsPanel({
               <CardContent className="p-3">
                 <div className="flex items-center justify-between mb-2 gap-2">
                   <h4 className="text-xs uppercase tracking-wide text-muted-foreground">
-                    Facility Type{" "}
-                    {selectedTypes.length > 0 && (
-                      <span className="text-[10px] normal-case tracking-normal text-primary">
-                        ({selectedTypes.length} selected)
-                      </span>
-                    )}
+                    Facility Type
                   </h4>
                   <Button
                     variant="ghost"
@@ -2950,7 +2942,6 @@ function FloodMap() {
 
   const [selectedTypes, setSelectedTypes] = useState([]);
 
-  // NEW: visibility toggle for the facility markers on the map
   const [facilitiesVisible, setFacilitiesVisible] = useState(true);
 
   const [mapMode, setMapMode] = useState("marker");
@@ -3124,7 +3115,6 @@ function FloodMap() {
     );
   }, []);
 
-  // NEW: toggle facilities visibility on the map
   const handleToggleFacilitiesVisibility = useCallback(() => {
     setFacilitiesVisible((v) => !v);
   }, []);
