@@ -24,7 +24,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { MapPin, MapPinOff, Users, Waves, Search } from "lucide-react";
+import {
+  MapPin,
+  MapPinOff,
+  Users,
+  Waves,
+  Search,
+  Eye,
+  EyeOff,
+} from "lucide-react";
 
 export const EVACUATION_CENTER_TYPE = "Evacuation Center";
 
@@ -960,7 +968,7 @@ function getDominantEmoji(markers) {
   return topEmojis.length === 1 ? topEmojis[0][0] : DEFAULT_MARKER_EMOJI;
 }
 
-function POILayer({ onFacilities, hiddenFacilities = [] }) {
+function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
   const map = useMap();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -968,6 +976,13 @@ function POILayer({ onFacilities, hiddenFacilities = [] }) {
   const onFacilitiesRef = useRef(onFacilities);
   const allFacilitiesRef = useRef([]);
   const [currentZoom, setCurrentZoom] = useState(map.getZoom());
+  const visibleRef = useRef(visible);
+  const [renderTick, setRenderTick] = useState(0);
+
+  useEffect(() => {
+    visibleRef.current = visible;
+    setRenderTick((t) => t + 1);
+  }, [visible]);
 
   useEffect(() => {
     onFacilitiesRef.current = onFacilities;
@@ -995,7 +1010,7 @@ function POILayer({ onFacilities, hiddenFacilities = [] }) {
         clusterRef.current = null;
       }
 
-      if (visibleRows.length === 0) {
+      if (!visibleRef.current || visibleRows.length === 0) {
         setLoading(false);
         return;
       }
@@ -1149,7 +1164,7 @@ function POILayer({ onFacilities, hiddenFacilities = [] }) {
     if (allFacilitiesRef.current.length > 0) {
       renderFacilities(allFacilitiesRef.current, currentZoom);
     }
-  }, [currentZoom, hiddenFacilities, renderFacilities]);
+  }, [currentZoom, hiddenFacilities, renderFacilities, renderTick]);
 
   return null;
 }
@@ -2542,6 +2557,8 @@ function FacilityDetailsPanel({
   mapMode,
   selectedBarangay,
   onClearBarangay,
+  facilitiesVisible,
+  onToggleFacilitiesVisibility,
 }) {
   const { mode, results, errorMsg, origin, originBarangay } = selection;
 
@@ -2587,14 +2604,33 @@ function FacilityDetailsPanel({
           {facilityTypes.length > 0 && (
             <Card>
               <CardContent className="p-3">
-                <h4 className="text-xs uppercase tracking-wide text-muted-foreground mb-2">
-                  Facility Type{" "}
-                  {selectedTypes.length > 0 && (
-                    <span className="text-[10px] normal-case tracking-normal text-primary">
-                      ({selectedTypes.length} selected)
-                    </span>
-                  )}
-                </h4>
+                <div className="flex items-center justify-between mb-2 gap-2">
+                  <h4 className="text-xs uppercase tracking-wide text-muted-foreground">
+                    Facility Type{" "}
+                    {selectedTypes.length > 0 && (
+                      <span className="text-[10px] normal-case tracking-normal text-primary">
+                        ({selectedTypes.length} selected)
+                      </span>
+                    )}
+                  </h4>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={onToggleFacilitiesVisibility}
+                    title={
+                      facilitiesVisible
+                        ? "Hide facilities on the map"
+                        : "Show facilities on the map"
+                    }
+                    className="h-6 w-6 shrink-0"
+                  >
+                    {facilitiesVisible ? (
+                      <Eye className="h-3.5 w-3.5" />
+                    ) : (
+                      <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
+                    )}
+                  </Button>
+                </div>
                 <div className="flex flex-wrap gap-1">
                   <Button
                     variant={selectedTypes.length === 0 ? "default" : "outline"}
@@ -2914,6 +2950,9 @@ function FloodMap() {
 
   const [selectedTypes, setSelectedTypes] = useState([]);
 
+  // NEW: visibility toggle for the facility markers on the map
+  const [facilitiesVisible, setFacilitiesVisible] = useState(true);
+
   const [mapMode, setMapMode] = useState("marker");
   const [selectedBarangay, setSelectedBarangay] = useState(null);
 
@@ -3085,6 +3124,11 @@ function FloodMap() {
     );
   }, []);
 
+  // NEW: toggle facilities visibility on the map
+  const handleToggleFacilitiesVisibility = useCallback(() => {
+    setFacilitiesVisible((v) => !v);
+  }, []);
+
   const effectiveHiddenFacilities = useMemo(() => {
     const hiddenIds = new Set();
 
@@ -3105,8 +3149,9 @@ function FloodMap() {
   }, [facilities, selectedTypes, hiddenFacilities]);
 
   const showEvacCenters =
-    selectedTypes.length === 0 ||
-    selectedTypes.includes(EVACUATION_CENTER_TYPE);
+    facilitiesVisible &&
+    (selectedTypes.length === 0 ||
+      selectedTypes.includes(EVACUATION_CENTER_TYPE));
 
   return (
     <div className="flex w-full h-screen">
@@ -3172,6 +3217,7 @@ function FloodMap() {
             <POILayer
               onFacilities={setFacilities}
               hiddenFacilities={effectiveHiddenFacilities}
+              visible={facilitiesVisible}
             />
             <EvacuationCentersLayer
               onCentersLoaded={setEvacuationCenters}
@@ -3224,6 +3270,8 @@ function FloodMap() {
           mapMode={mapMode}
           selectedBarangay={selectedBarangay}
           onClearBarangay={handleClearBarangay}
+          facilitiesVisible={facilitiesVisible}
+          onToggleFacilitiesVisibility={handleToggleFacilitiesVisibility}
         />
       </div>
 
