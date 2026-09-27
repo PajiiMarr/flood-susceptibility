@@ -2128,7 +2128,6 @@ function QGISRasterLayer({
 
   useEffect(() => {
     let cancelled = false;
-    const controller = new AbortController();
 
     const loadRasterLayer = async () => {
       if (!isActive || !isMountedRef.current) {
@@ -2149,6 +2148,7 @@ function QGISRasterLayer({
 
       const config = QGIS_LAYER_CONFIGS[layerKey];
 
+      // LOG: Start loading
       console.log(`[QGIS] Starting load for layer: ${layerKey}`);
       console.log(`[QGIS] Target URL: ${config.path}`);
 
@@ -2157,14 +2157,9 @@ function QGISRasterLayer({
         onLoadError?.(layerKey, null);
         loadAttemptedRef.current = true;
 
-        // 30s timeout guard so a genuinely stuck request fails visibly
-        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        const response = await fetch(config.path);
 
-        const response = await fetch(config.path, {
-          signal: controller.signal,
-        });
-        clearTimeout(timeoutId);
-
+        // LOG: Response status
         console.log(
           `[QGIS] Response status for ${layerKey}: ${response.status} ${response.statusText}`,
         );
@@ -2177,11 +2172,10 @@ function QGISRasterLayer({
 
         const arrayBuffer = await response.arrayBuffer();
 
+        // LOG: Data received
         console.log(
           `[QGIS] Data received for ${layerKey}. Size: ${arrayBuffer.byteLength} bytes`,
         );
-
-        if (cancelled || !isMountedRef.current) return;
 
         const tiff = await geotiff.fromArrayBuffer(arrayBuffer);
         const image = await tiff.getImage();
@@ -2192,6 +2186,7 @@ function QGISRasterLayer({
         const height = image.getHeight();
         const data = await image.readRasters();
 
+        // LOG: TIFF parsed
         console.log(
           `[QGIS] TIFF parsed for ${layerKey}. Dimensions: ${width}x${height}`,
         );
@@ -2303,6 +2298,7 @@ function QGISRasterLayer({
         overlay.addTo(map);
         layerRef.current = overlay;
 
+        // LOG: Layer successfully added
         console.log(`[QGIS] Successfully added layer ${layerKey} to map.`);
 
         onRasterLoaded?.(layerKey, {
@@ -2321,23 +2317,7 @@ function QGISRasterLayer({
           { padding: [50, 50] },
         );
       } catch (error) {
-        if (error.name === "AbortError") {
-          console.log(
-            `[QGIS] Load aborted for ${layerKey} (cancelled or timed out).`,
-          );
-          // Aborted intentionally (unmount/re-run) — don't surface as a user-facing error
-          // unless it was our own 30s timeout firing while still mounted.
-          if (!cancelled && isMountedRef.current) {
-            onLoadError?.(
-              layerKey,
-              "Request timed out after 30s — file may be too large or the connection stalled.",
-            );
-            onRasterLoaded?.(layerKey, null);
-            loadAttemptedRef.current = false;
-          }
-          return;
-        }
-
+        // LOG: Error occurred
         console.error(`[QGIS] Failed to load ${layerKey}:`, error);
         console.error(`[QGIS] Failed URL: ${config.path}`);
 
@@ -2357,7 +2337,6 @@ function QGISRasterLayer({
 
     return () => {
       cancelled = true;
-      controller.abort();
       if (layerRef.current) {
         map.removeLayer(layerRef.current);
         layerRef.current = null;
