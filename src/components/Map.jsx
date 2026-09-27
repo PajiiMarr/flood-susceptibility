@@ -92,15 +92,35 @@ const MARITIME_BOUNDARY_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
 const POPULATION_XLSX_URL =
   "https://xflhynxdadwlrloxiogv.supabase.co/storage/v1/object/public/fsi-bucket/SOCIO%20DEMOGRAPHIC%20DATAS/Region-IX_0.xlsx";
 
-const TILE_SERVER_BASE =
-  import.meta.env.VITE_TILE_SERVER_URL || "http://localhost:4001";
+// ==========================================
+// AZURE BLOB STORAGE CONFIGURATION
+// ==========================================
+const BLOB_SAS_URL = import.meta.env.VITE_BLOB_SAS_URL || "";
 
-function buildTilePath(relativePath) {
-  const encoded = relativePath
+function buildAzurePath(relativePath) {
+  if (!BLOB_SAS_URL) {
+    console.warn("VITE_BLOB_SAS_URL is not defined in .env");
+    return "";
+  }
+
+  // Split the base URL and the SAS token
+  const [baseUrl, sasToken] = BLOB_SAS_URL.split("?");
+
+  // Encode each path segment to handle spaces and special characters
+  const encodedPath = relativePath
     .split("/")
     .map((segment) => encodeURIComponent(segment))
     .join("/");
-  return `${TILE_SERVER_BASE}/${encoded}`;
+
+  // Reconstruct the URL with the SAS token
+  const finalUrl = sasToken
+    ? `${baseUrl}/${encodedPath}?${sasToken}`
+    : `${baseUrl}/${encodedPath}`;
+
+  // LOG: Show the constructed Azure URL
+  console.log(`[Azure] Constructed URL for ${relativePath}:`, finalUrl);
+
+  return finalUrl;
 }
 
 proj4.defs("EPSG:32651", "+proj=utm +zone=51 +datum=WGS84 +units=m +no_defs");
@@ -150,9 +170,10 @@ function getRasterValueAtLatLng(latlng, info) {
 }
 
 const QGIS_LAYER_CONFIGS = {
+  /* 
   dem: {
     name: "Digital Elevation Model",
-    path: buildTilePath(
+    path: buildAzurePath(
       "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_DEM.tif",
     ),
     colorScale: "terrain",
@@ -163,7 +184,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   dem_filled: {
     name: "Filled DEM",
-    path: buildTilePath(
+    path: buildAzurePath(
       "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_DEM_Filled.tiff",
     ),
     colorScale: "terrain",
@@ -174,7 +195,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   slope: {
     name: "Slope",
-    path: buildTilePath(
+    path: buildAzurePath(
       "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_Slope.tiff",
     ),
     colorScale: "slope",
@@ -185,7 +206,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   aspect: {
     name: "Aspect",
-    path: buildTilePath(
+    path: buildAzurePath(
       "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_Aspect.tiff",
     ),
     colorScale: "hsv",
@@ -196,7 +217,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   twi: {
     name: "Topographic Wetness Index",
-    path: buildTilePath(
+    path: buildAzurePath(
       "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_TWI.tif",
     ),
     colorScale: "blues",
@@ -207,7 +228,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   hand: {
     name: "Height Above Nearest Drainage",
-    path: buildTilePath(
+    path: buildAzurePath(
       "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_HAND.tif",
     ),
     colorScale: "reds",
@@ -218,7 +239,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   flow_accumulation: {
     name: "Flow Accumulation",
-    path: buildTilePath(
+    path: buildAzurePath(
       "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_Flow_Accumulation.tif",
     ),
     colorScale: "blues",
@@ -229,7 +250,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   flow_accumulation_log: {
     name: "Flow Accumulation (Log)",
-    path: buildTilePath(
+    path: buildAzurePath(
       "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_Flow_Accumulation_Log.tif",
     ),
     colorScale: "blues",
@@ -238,20 +259,20 @@ const QGIS_LAYER_CONFIGS = {
     description: "Log-transformed flow",
     unit: "",
   },
+  */
   chirps: {
     name: "CHIRPS Rainfall",
-    path: buildTilePath(
-      "FOR TRAINING/CLIMATIC DATAS/qgis/Zamboanga_CHIRPS_Resampled.tiff",
-    ),
+    path: buildAzurePath("Zamboanga_CHIRPS_Resampled.tiff"),
     colorScale: "rainbow",
     opacity: 0.8,
     previewColor: "#E91E63",
     description: "Rainfall data",
     unit: " mm",
   },
+  /*
   river_network: {
     name: "River Network",
-    path: buildTilePath(
+    path: buildAzurePath(
       "FOR TRAINING/HYDROLOGICAL DATAS/qgis/Zamboanga_River_Network.tiff",
     ),
     colorScale: "blues",
@@ -262,7 +283,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   drainage_density: {
     name: "Drainage Density",
-    path: buildTilePath(
+    path: buildAzurePath(
       "FOR TRAINING/HYDROLOGICAL DATAS/qgis/Zamboanga_Drainage_Density.tiff",
     ),
     colorScale: "greens",
@@ -273,7 +294,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   distance_to_river: {
     name: "Distance to River",
-    path: buildTilePath(
+    path: buildAzurePath(
       "FOR TRAINING/HYDROLOGICAL DATAS/qgis/Zamboanga_Distance_to_river.tiff",
     ),
     colorScale: "purples",
@@ -284,7 +305,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   rivers_raster: {
     name: "Rivers Raster",
-    path: buildTilePath(
+    path: buildAzurePath(
       "FOR TRAINING/HYDROLOGICAL DATAS/qgis/Zamboanga_Rivers_Rasters.tif",
     ),
     colorScale: "blues",
@@ -293,6 +314,7 @@ const QGIS_LAYER_CONFIGS = {
     description: "Rasterized rivers",
     unit: "",
   },
+  */
 };
 
 function haversineDistance([lat1, lon1], [lat2, lon2]) {
@@ -1988,13 +2010,14 @@ function QGISLayerControl({
   }, []);
 
   const handleToggleLayer = (key) => {
+    console.log(`[QGIS] Toggling layer: ${key}`);
     onLayerToggle(key);
   };
 
   return (
     <div
       ref={containerRef}
-      className="absolute top-4 left-4 z-[1000] min-w-[160px] max-w-[220px]"
+      className="absolute top-20 left-4 z-[1000] min-w-[160px] max-w-[220px]"
       style={{
         backgroundColor: "rgba(255,255,255,0.92)",
         backdropFilter: "blur(6px)",
@@ -2105,6 +2128,7 @@ function QGISRasterLayer({
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
 
     const loadRasterLayer = async () => {
       if (!isActive || !isMountedRef.current) {
@@ -2124,25 +2148,53 @@ function QGISRasterLayer({
       }
 
       const config = QGIS_LAYER_CONFIGS[layerKey];
+
+      console.log(`[QGIS] Starting load for layer: ${layerKey}`);
+      console.log(`[QGIS] Target URL: ${config.path}`);
+
       try {
         onLoadingChange?.(layerKey, true);
         onLoadError?.(layerKey, null);
         loadAttemptedRef.current = true;
 
-        const response = await fetch(config.path);
+        // 30s timeout guard so a genuinely stuck request fails visibly
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+        const response = await fetch(config.path, {
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+
+        console.log(
+          `[QGIS] Response status for ${layerKey}: ${response.status} ${response.statusText}`,
+        );
+
         if (!response.ok) {
           throw new Error(
-            `HTTP ${response.status}: ${response.statusText}. Make sure the static-data server is running at ${TILE_SERVER_BASE}`,
+            `HTTP ${response.status}: ${response.statusText}. Check Azure SAS token or CORS settings.`,
           );
         }
 
         const arrayBuffer = await response.arrayBuffer();
+
+        console.log(
+          `[QGIS] Data received for ${layerKey}. Size: ${arrayBuffer.byteLength} bytes`,
+        );
+
+        if (cancelled || !isMountedRef.current) return;
+
         const tiff = await geotiff.fromArrayBuffer(arrayBuffer);
         const image = await tiff.getImage();
         const bbox = image.getBoundingBox();
+        console.log(`[QGIS] Raw bbox for ${layerKey}:`, bbox);
+        console.log(`[QGIS] GeoKeys:`, image.getGeoKeys?.());
         const width = image.getWidth();
         const height = image.getHeight();
         const data = await image.readRasters();
+
+        console.log(
+          `[QGIS] TIFF parsed for ${layerKey}. Dimensions: ${width}x${height}`,
+        );
 
         let noDataValue = null;
         try {
@@ -2251,6 +2303,8 @@ function QGISRasterLayer({
         overlay.addTo(map);
         layerRef.current = overlay;
 
+        console.log(`[QGIS] Successfully added layer ${layerKey} to map.`);
+
         onRasterLoaded?.(layerKey, {
           values,
           width,
@@ -2267,7 +2321,26 @@ function QGISRasterLayer({
           { padding: [50, 50] },
         );
       } catch (error) {
-        console.error(`Failed to load ${layerKey} (${config.path}):`, error);
+        if (error.name === "AbortError") {
+          console.log(
+            `[QGIS] Load aborted for ${layerKey} (cancelled or timed out).`,
+          );
+          // Aborted intentionally (unmount/re-run) — don't surface as a user-facing error
+          // unless it was our own 30s timeout firing while still mounted.
+          if (!cancelled && isMountedRef.current) {
+            onLoadError?.(
+              layerKey,
+              "Request timed out after 30s — file may be too large or the connection stalled.",
+            );
+            onRasterLoaded?.(layerKey, null);
+            loadAttemptedRef.current = false;
+          }
+          return;
+        }
+
+        console.error(`[QGIS] Failed to load ${layerKey}:`, error);
+        console.error(`[QGIS] Failed URL: ${config.path}`);
+
         if (!cancelled && isMountedRef.current) {
           onLoadError?.(layerKey, error.message || "Failed to load layer");
           onRasterLoaded?.(layerKey, null);
@@ -2284,6 +2357,7 @@ function QGISRasterLayer({
 
     return () => {
       cancelled = true;
+      controller.abort();
       if (layerRef.current) {
         map.removeLayer(layerRef.current);
         layerRef.current = null;
@@ -3213,6 +3287,15 @@ function FloodMap() {
               onCentersLoaded={setEvacuationCenters}
               visible={showEvacCenters}
             />
+
+            <QGISLayers
+              activeLayers={activeQGISLayers}
+              cityBoundary={cityBoundary}
+              onLoadingChange={handleQGISLoadingChange}
+              onLoadError={handleQGISLoadError}
+              onRasterLoaded={handleRasterLoaded}
+            />
+
             <RoutingLayer
               facilities={facilities}
               evacuationCenters={evacuationCenters}
@@ -3231,6 +3314,7 @@ function FloodMap() {
               mapMode={mapMode}
               onBarangaySelect={handleBarangaySelect}
             />
+
             <MapControls
               onLocate={handleLocate}
               onClear={handleClear}
@@ -3239,6 +3323,13 @@ function FloodMap() {
             />
             <LegendControl />
           </MapContainer>
+
+          <QGISLayerControl
+            onLayerToggle={handleLayerToggle}
+            activeLayers={activeQGISLayers}
+            layerErrors={qgisLayerErrors}
+            layerLoading={qgisLayerLoading}
+          />
 
           <MapModeControl mode={mapMode} onModeChange={handleModeChange} />
 
