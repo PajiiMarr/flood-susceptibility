@@ -170,12 +170,9 @@ function getRasterValueAtLatLng(latlng, info) {
 }
 
 const QGIS_LAYER_CONFIGS = {
-  /* 
   dem: {
     name: "Digital Elevation Model",
-    path: buildAzurePath(
-      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_DEM.tif",
-    ),
+    path: buildAzurePath("Zamboanga_DEM.tif"),
     colorScale: "terrain",
     opacity: 0.8,
     previewColor: "#4CAF50",
@@ -184,9 +181,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   dem_filled: {
     name: "Filled DEM",
-    path: buildAzurePath(
-      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_DEM_Filled.tiff",
-    ),
+    path: buildAzurePath("Zamboanga_DEM_Filled.tiff"),
     colorScale: "terrain",
     opacity: 0.8,
     previewColor: "#8BC34A",
@@ -195,9 +190,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   slope: {
     name: "Slope",
-    path: buildAzurePath(
-      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_Slope.tiff",
-    ),
+    path: buildAzurePath("Zamboanga_Slope.tiff"),
     colorScale: "slope",
     opacity: 0.8,
     previewColor: "#FF9800",
@@ -206,9 +199,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   aspect: {
     name: "Aspect",
-    path: buildAzurePath(
-      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_Aspect.tiff",
-    ),
+    path: buildAzurePath("Zamboanga_Aspect.tiff"),
     colorScale: "hsv",
     opacity: 0.8,
     previewColor: "#9C27B0",
@@ -217,9 +208,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   twi: {
     name: "Topographic Wetness Index",
-    path: buildAzurePath(
-      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_TWI.tif",
-    ),
+    path: buildAzurePath("Zamboanga_TWI.tif"),
     colorScale: "blues",
     opacity: 0.8,
     previewColor: "#2196F3",
@@ -228,9 +217,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   hand: {
     name: "Height Above Nearest Drainage",
-    path: buildAzurePath(
-      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_HAND.tif",
-    ),
+    path: buildAzurePath("Zamboanga_HAND.tif"),
     colorScale: "reds",
     opacity: 0.8,
     previewColor: "#F44336",
@@ -239,9 +226,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   flow_accumulation: {
     name: "Flow Accumulation",
-    path: buildAzurePath(
-      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_Flow_Accumulation.tif",
-    ),
+    path: buildAzurePath("Zamboanga_Flow_Accumulation.tif"),
     colorScale: "blues",
     opacity: 0.8,
     previewColor: "#00BCD4",
@@ -250,16 +235,13 @@ const QGIS_LAYER_CONFIGS = {
   },
   flow_accumulation_log: {
     name: "Flow Accumulation (Log)",
-    path: buildAzurePath(
-      "FOR TRAINING/TOPOGRAPHIC DATAS/qgis/Zamboanga_Flow_Accumulation_Log.tif",
-    ),
+    path: buildAzurePath("Zamboanga_Flow_Accumulation_Log.tif"),
     colorScale: "blues",
     opacity: 0.8,
     previewColor: "#26C6DA",
     description: "Log-transformed flow",
     unit: "",
   },
-  */
   chirps: {
     name: "CHIRPS Rainfall",
     path: buildAzurePath("Zamboanga_CHIRPS_Resampled.tiff"),
@@ -269,12 +251,9 @@ const QGIS_LAYER_CONFIGS = {
     description: "Rainfall data",
     unit: " mm",
   },
-  /*
   river_network: {
     name: "River Network",
-    path: buildAzurePath(
-      "FOR TRAINING/HYDROLOGICAL DATAS/qgis/Zamboanga_River_Network.tiff",
-    ),
+    path: buildAzurePath("Zamboanga_River_Network.tiff"),
     colorScale: "blues",
     opacity: 0.8,
     previewColor: "#1565C0",
@@ -283,9 +262,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   drainage_density: {
     name: "Drainage Density",
-    path: buildAzurePath(
-      "FOR TRAINING/HYDROLOGICAL DATAS/qgis/Zamboanga_Drainage_Density.tiff",
-    ),
+    path: buildAzurePath("Zamboanga_Drainage_Density.tiff"),
     colorScale: "greens",
     opacity: 0.8,
     previewColor: "#2E7D32",
@@ -294,9 +271,7 @@ const QGIS_LAYER_CONFIGS = {
   },
   distance_to_river: {
     name: "Distance to River",
-    path: buildAzurePath(
-      "FOR TRAINING/HYDROLOGICAL DATAS/qgis/Zamboanga_Distance_to_river.tiff",
-    ),
+    path: buildAzurePath("Zamboanga_Distance_to_river.tiff"),
     colorScale: "purples",
     opacity: 0.8,
     previewColor: "#6A1B9A",
@@ -305,16 +280,13 @@ const QGIS_LAYER_CONFIGS = {
   },
   rivers_raster: {
     name: "Rivers Raster",
-    path: buildAzurePath(
-      "FOR TRAINING/HYDROLOGICAL DATAS/qgis/Zamboanga_Rivers_Rasters.tif",
-    ),
+    path: buildAzurePath("Zamboanga_Rivers_Rasters.tif"),
     colorScale: "blues",
     opacity: 0.8,
     previewColor: "#0D47A1",
     description: "Rasterized rivers",
     unit: "",
   },
-  */
 };
 
 function haversineDistance([lat1, lon1], [lat2, lon2]) {
@@ -2128,6 +2100,7 @@ function QGISRasterLayer({
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
 
     const loadRasterLayer = async () => {
       if (!isActive || !isMountedRef.current) {
@@ -2142,27 +2115,20 @@ function QGISRasterLayer({
         return;
       }
 
-      if (loadAttemptedRef.current && layerRef.current) {
-        return;
-      }
+      if (loadAttemptedRef.current && layerRef.current) return;
 
       const config = QGIS_LAYER_CONFIGS[layerKey];
-
-      // LOG: Start loading
       console.log(`[QGIS] Starting load for layer: ${layerKey}`);
-      console.log(`[QGIS] Target URL: ${config.path}`);
 
       try {
         onLoadingChange?.(layerKey, true);
         onLoadError?.(layerKey, null);
         loadAttemptedRef.current = true;
 
-        const response = await fetch(config.path);
-
-        // LOG: Response status
-        console.log(
-          `[QGIS] Response status for ${layerKey}: ${response.status} ${response.statusText}`,
-        );
+        // signal makes the browser cancel the download when controller.abort() runs
+        const response = await fetch(config.path, {
+          signal: controller.signal,
+        });
 
         if (!response.ok) {
           throw new Error(
@@ -2170,26 +2136,16 @@ function QGISRasterLayer({
           );
         }
 
-        const arrayBuffer = await response.arrayBuffer();
-
-        // LOG: Data received
-        console.log(
-          `[QGIS] Data received for ${layerKey}. Size: ${arrayBuffer.byteLength} bytes`,
-        );
+        const arrayBuffer = await response.arrayBuffer(); // also aborts mid-body
+        if (cancelled) return;
 
         const tiff = await geotiff.fromArrayBuffer(arrayBuffer);
         const image = await tiff.getImage();
         const bbox = image.getBoundingBox();
-        console.log(`[QGIS] Raw bbox for ${layerKey}:`, bbox);
-        console.log(`[QGIS] GeoKeys:`, image.getGeoKeys?.());
         const width = image.getWidth();
         const height = image.getHeight();
         const data = await image.readRasters();
-
-        // LOG: TIFF parsed
-        console.log(
-          `[QGIS] TIFF parsed for ${layerKey}. Dimensions: ${width}x${height}`,
-        );
+        if (cancelled) return;
 
         let noDataValue = null;
         try {
@@ -2200,8 +2156,6 @@ function QGISRasterLayer({
         } catch {
           noDataValue = null;
         }
-
-        if (cancelled || !isMountedRef.current) return;
 
         const canvas = document.createElement("canvas");
         canvas.width = width;
@@ -2222,9 +2176,6 @@ function QGISRasterLayer({
         for (let i = 0; i < values.length; i++) {
           const idx = i * 4;
           if (noDataValue != null && values[i] === noDataValue) {
-            imageData.data[idx] = 0;
-            imageData.data[idx + 1] = 0;
-            imageData.data[idx + 2] = 0;
             imageData.data[idx + 3] = 0;
             continue;
           }
@@ -2235,7 +2186,6 @@ function QGISRasterLayer({
           imageData.data[idx + 2] = b;
           imageData.data[idx + 3] = 255;
         }
-
         ctx.putImageData(imageData, 0, 0);
 
         let outputCanvas = canvas;
@@ -2266,16 +2216,10 @@ function QGISRasterLayer({
         }
 
         const dataUrl = outputCanvas.toDataURL("image/png");
+        const bottomLeft = utmToLatLng(bbox[0], bbox[1]);
+        const topRight = utmToLatLng(bbox[2], bbox[3]);
 
-        const west = bbox[0];
-        const south = bbox[1];
-        const east = bbox[2];
-        const north = bbox[3];
-
-        const bottomLeft = utmToLatLng(west, south);
-        const topRight = utmToLatLng(east, north);
-
-        if (cancelled || !isMountedRef.current) return;
+        if (cancelled) return;
 
         if (layerRef.current) {
           map.removeLayer(layerRef.current);
@@ -2294,11 +2238,9 @@ function QGISRasterLayer({
             pane: "qgis-pane",
           },
         );
-
         overlay.addTo(map);
         layerRef.current = overlay;
 
-        // LOG: Layer successfully added
         console.log(`[QGIS] Successfully added layer ${layerKey} to map.`);
 
         onRasterLoaded?.(layerKey, {
@@ -2317,19 +2259,18 @@ function QGISRasterLayer({
           { padding: [50, 50] },
         );
       } catch (error) {
-        // LOG: Error occurred
+        // Cancelling on purpose is not an error, so don't show it in the panel
+        if (error.name === "AbortError" || cancelled) {
+          console.log(`[QGIS] Cancelled load for ${layerKey}`);
+          return;
+        }
         console.error(`[QGIS] Failed to load ${layerKey}:`, error);
-        console.error(`[QGIS] Failed URL: ${config.path}`);
-
-        if (!cancelled && isMountedRef.current) {
-          onLoadError?.(layerKey, error.message || "Failed to load layer");
-          onRasterLoaded?.(layerKey, null);
-          loadAttemptedRef.current = false;
-        }
+        onLoadError?.(layerKey, error.message || "Failed to load layer");
+        onRasterLoaded?.(layerKey, null);
+        loadAttemptedRef.current = false;
       } finally {
-        if (isMountedRef.current && !cancelled) {
-          onLoadingChange?.(layerKey, false);
-        }
+        // Runs even when cancelled, otherwise the ⏳ icon gets stuck
+        if (isMountedRef.current) onLoadingChange?.(layerKey, false);
       }
     };
 
@@ -2337,11 +2278,13 @@ function QGISRasterLayer({
 
     return () => {
       cancelled = true;
+      controller.abort(); // cancels the in-flight request
       if (layerRef.current) {
         map.removeLayer(layerRef.current);
         layerRef.current = null;
       }
       onRasterLoaded?.(layerKey, null);
+      onLoadingChange?.(layerKey, false); // clear the ⏳ immediately
       loadAttemptedRef.current = false;
     };
   }, [map, layerKey, isActive, onLoadingChange, onLoadError, onRasterLoaded]);
@@ -3092,11 +3035,7 @@ function FloodMap() {
   }, []);
 
   const handleLayerToggle = useCallback((layerKey) => {
-    setActiveQGISLayers((prev) =>
-      prev.includes(layerKey)
-        ? prev.filter((key) => key !== layerKey)
-        : [...prev, layerKey],
-    );
+    setActiveQGISLayers((prev) => (prev.includes(layerKey) ? [] : [layerKey]));
   }, []);
 
   const handleQGISLoadingChange = useCallback((layerKey, isLoading) => {
