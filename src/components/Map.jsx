@@ -1721,7 +1721,7 @@ function RoutingLayer({
 function ZamboangaMask({
   onBoundaryLoaded,
   onBarangaysLoaded,
-  hideFSI,
+  rasterActive,
   mapMode,
   selectedBarangayName,
 }) {
@@ -1733,10 +1733,13 @@ function ZamboangaMask({
   const barangayLayersByNameRef = useRef({});
   const prevSelectedLayerRef = useRef(null);
 
-  const hideFSIRef = useRef(hideFSI);
+  const rasterActiveRef = useRef(rasterActive);
   useEffect(() => {
-    hideFSIRef.current = hideFSI;
-  }, [hideFSI]);
+    rasterActiveRef.current = rasterActive;
+  }, [rasterActive]);
+
+  const getBaseFill = () =>
+    rasterActiveRef.current ? 0.12 : FSI_OPACITY.normal;
 
   const mapModeRef = useRef(mapMode);
   useEffect(() => {
@@ -1745,6 +1748,11 @@ function ZamboangaMask({
 
   useEffect(() => {
     let maskLayer, borderLayer, barangayLayer, maritimeLayer;
+
+    if (!map.getPane("fsi-pane")) {
+      const pane = map.createPane("fsi-pane");
+      pane.style.zIndex = 650; // above qgis-pane (600), so FSI stays visible over rasters
+    }
 
     Promise.all([
       fetch("/zamboanga_city_boundary.geojson").then((r) => r.json()),
@@ -1834,6 +1842,7 @@ function ZamboangaMask({
       onBarangaysLoaded?.(updatedBarangayData);
 
       barangayLayer = L.geoJSON(updatedBarangayData, {
+        pane: "fsi-pane",
         style: (feature) => {
           const risk = feature?.properties?.fsi_risk || "Low Risk";
           return {
@@ -1841,7 +1850,7 @@ function ZamboangaMask({
             weight: 1,
             opacity: FSI_OPACITY.borderOpacity,
             fillColor: RISK_LEVELS[risk] || RISK_LEVELS["Low Risk"],
-            fillOpacity: FSI_OPACITY.normal,
+            fillOpacity: getBaseFill(),
           };
         },
         interactive: true,
@@ -1886,7 +1895,7 @@ function ZamboangaMask({
           layer.on("mouseout", function () {
             if (prevSelectedLayerRef.current === this) return;
             this.setStyle({
-              fillOpacity: FSI_OPACITY.normal,
+              fillOpacity: getBaseFill(),
               weight: 1,
             });
             if (!clickOpened) this.closeTooltip();
@@ -1919,15 +1928,17 @@ function ZamboangaMask({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, onBoundaryLoaded, onBarangaysLoaded]);
 
+  // Adjust FSI fill opacity live when a QGIS raster is toggled on/off,
+  // without removing the layer (so borders/tooltips/clicks keep working).
   useEffect(() => {
-    if (barangayLayerRef.current) {
-      if (hideFSI) {
-        map.removeLayer(barangayLayerRef.current);
-      } else {
-        map.addLayer(barangayLayerRef.current);
-      }
-    }
-  }, [map, hideFSI]);
+    const layer = barangayLayerRef.current;
+    if (!layer) return;
+    layer.eachLayer((l) => {
+      if (l === prevSelectedLayerRef.current) return; // keep selected highlight untouched
+      l.setStyle({ fillOpacity: getBaseFill() });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rasterActive]);
 
   useEffect(() => {
     if (prevSelectedLayerRef.current) {
@@ -1935,7 +1946,7 @@ function ZamboangaMask({
         color: "#ffffff",
         weight: 1,
         opacity: FSI_OPACITY.borderOpacity,
-        fillOpacity: FSI_OPACITY.normal,
+        fillOpacity: getBaseFill(),
       });
       prevSelectedLayerRef.current = null;
     }
@@ -3192,7 +3203,7 @@ function FloodMap() {
             <ZamboangaMask
               onBoundaryLoaded={handleBoundaryLoaded}
               onBarangaysLoaded={handleBarangaysLoaded}
-              hideFSI={hasQGISLayersActive}
+              rasterActive={hasQGISLayersActive}
               mapMode={mapMode}
               selectedBarangayName={selectedBarangay?.name || null}
             />
