@@ -103,21 +103,17 @@ function buildAzurePath(relativePath) {
     return "";
   }
 
-  // Split the base URL and the SAS token
   const [baseUrl, sasToken] = BLOB_SAS_URL.split("?");
 
-  // Encode each path segment to handle spaces and special characters
   const encodedPath = relativePath
     .split("/")
     .map((segment) => encodeURIComponent(segment))
     .join("/");
 
-  // Reconstruct the URL with the SAS token
   const finalUrl = sasToken
     ? `${baseUrl}/${encodedPath}?${sasToken}`
     : `${baseUrl}/${encodedPath}`;
 
-  // LOG: Show the constructed Azure URL
   console.log(`[Azure] Constructed URL for ${relativePath}:`, finalUrl);
 
   return finalUrl;
@@ -167,6 +163,36 @@ function getRasterValueAtLatLng(latlng, info) {
   if (value == null || Number.isNaN(value)) return null;
   if (noDataValue != null && value === noDataValue) return null;
   return value;
+}
+
+// ---- Legend / hover formatting helpers ----
+function formatRasterValue(value) {
+  if (value == null || Number.isNaN(value)) return "N/A";
+  const abs = Math.abs(value);
+  if (abs >= 1000) return value.toFixed(0);
+  if (abs >= 10) return value.toFixed(1);
+  return value.toFixed(2);
+}
+
+const LEGEND_BUCKETS = [
+  { t0: 0, t1: 0.2 },
+  { t0: 0.2, t1: 0.4 },
+  { t0: 0.4, t1: 0.6 },
+  { t0: 0.6, t1: 0.8 },
+  { t0: 0.8, t1: 1 },
+];
+
+function buildLegendStops(colorScale, minVal, maxVal) {
+  const range = maxVal - minVal;
+  return LEGEND_BUCKETS.map(({ t0, t1 }) => {
+    const mid = (t0 + t1) / 2;
+    const [r, g, b] = getColorRamp(mid, colorScale);
+    return {
+      color: `rgb(${r}, ${g}, ${b})`,
+      v0: minVal + t0 * range,
+      v1: minVal + t1 * range,
+    };
+  });
 }
 
 const QGIS_LAYER_CONFIGS = {
@@ -491,8 +517,16 @@ async function reverseGeocode(lat, lng) {
   return data.display_name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
 }
 
-function LegendControl() {
+// LegendControl now also renders the FSI show/hide toggle.
+function LegendControl({ fsiVisible, onToggleFsi }) {
   const map = useMap();
+  const divRef = useRef(null);
+  const onToggleRef = useRef(onToggleFsi);
+
+  useEffect(() => {
+    onToggleRef.current = onToggleFsi;
+  }, [onToggleFsi]);
+
   useEffect(() => {
     const legend = L.control({ position: "topright" });
     legend.onAdd = () => {
@@ -504,20 +538,70 @@ function LegendControl() {
       div.style.fontFamily = "Arial, sans-serif";
       div.style.fontSize = "12px";
       div.style.color = "black";
-      div.innerHTML = "<strong>Flood Susceptibility Index</strong><br>";
-      for (const [level, color] of Object.entries(RISK_LEVELS)) {
-        div.innerHTML += `
-          <div style="display: flex; align-items: center; margin-top: 4px;">
-            <div style="background: ${color}; width: 18px; height: 18px; border-radius: 2px; margin-right: 8px;"></div>
-            <span>${level}</span>
-          </div>
-        `;
-      }
+      div.style.minWidth = "170px";
+      L.DomEvent.disableClickPropagation(div);
+      L.DomEvent.disableScrollPropagation(div);
+      divRef.current = div;
       return div;
     };
     legend.addTo(map);
-    return () => legend.remove();
+    return () => {
+      legend.remove();
+      divRef.current = null;
+    };
   }, [map]);
+
+  useEffect(() => {
+    const div = divRef.current;
+    if (!div) return;
+
+    div.innerHTML = "";
+
+    const header = document.createElement("div");
+    header.style.cssText =
+      "display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;";
+
+    const title = document.createElement("strong");
+    title.textContent = "Flood Susceptibility Index";
+    header.appendChild(title);
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.title = fsiVisible ? "Hide FSI layer" : "Show FSI layer";
+    toggleBtn.style.cssText = `
+      border: none; background: ${fsiVisible ? "#1a73e8" : "#e0e0e0"};
+      color: ${fsiVisible ? "#fff" : "#555"};
+      font-size: 10px; font-weight: 600; padding: 3px 8px;
+      border-radius: 12px; cursor: pointer; margin-left: 10px;
+      white-space: nowrap;
+    `;
+    toggleBtn.textContent = fsiVisible ? "ON" : "OFF";
+    toggleBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onToggleRef.current?.();
+    });
+    header.appendChild(toggleBtn);
+    div.appendChild(header);
+
+    for (const [level, color] of Object.entries(RISK_LEVELS)) {
+      const row = document.createElement("div");
+      row.style.cssText =
+        "display:flex; align-items:center; margin-top:4px; opacity:" +
+        (fsiVisible ? "1" : "0.4") +
+        ";";
+
+      const swatch = document.createElement("div");
+      swatch.style.cssText = `background:${color}; width:18px; height:18px; border-radius:2px; margin-right:8px;`;
+
+      const label = document.createElement("span");
+      label.textContent = level;
+
+      row.appendChild(swatch);
+      row.appendChild(label);
+      div.appendChild(row);
+    }
+  }, [fsiVisible]);
+
   return null;
 }
 
@@ -1718,10 +1802,14 @@ function RoutingLayer({
   return null;
 }
 
+// ZamboangaMask now accepts rasterActive + fsiVisible.
+// Boundaries / maritime line are always rendered — only the barangay fill
+// opacity ever changes.
 function ZamboangaMask({
   onBoundaryLoaded,
   onBarangaysLoaded,
   rasterActive,
+  fsiVisible,
   mapMode,
   selectedBarangayName,
 }) {
@@ -1738,8 +1826,20 @@ function ZamboangaMask({
     rasterActiveRef.current = rasterActive;
   }, [rasterActive]);
 
-  const getBaseFill = () =>
-    rasterActiveRef.current ? 0.12 : FSI_OPACITY.normal;
+  const fsiVisibleRef = useRef(fsiVisible);
+  useEffect(() => {
+    fsiVisibleRef.current = fsiVisible;
+  }, [fsiVisible]);
+
+  const getBaseFill = () => {
+    if (!fsiVisibleRef.current) return 0;
+    return rasterActiveRef.current ? 0.12 : FSI_OPACITY.normal;
+  };
+
+  const getBaseBorder = () => {
+    if (!fsiVisibleRef.current) return 0;
+    return FSI_OPACITY.borderOpacity;
+  };
 
   const mapModeRef = useRef(mapMode);
   useEffect(() => {
@@ -1751,7 +1851,12 @@ function ZamboangaMask({
 
     if (!map.getPane("fsi-pane")) {
       const pane = map.createPane("fsi-pane");
-      pane.style.zIndex = 650; // above qgis-pane (600), so FSI stays visible over rasters
+      pane.style.zIndex = 640;
+    }
+
+    const tooltipPane = map.getPane("tooltipPane");
+    if (tooltipPane) {
+      tooltipPane.style.zIndex = 660;
     }
 
     Promise.all([
@@ -1845,11 +1950,14 @@ function ZamboangaMask({
         pane: "fsi-pane",
         style: (feature) => {
           const risk = feature?.properties?.fsi_risk || "Low Risk";
+          const showFsi = fsiVisibleRef.current;
           return {
-            color: "#ffffff",
+            color: showFsi ? "#ffffff" : "transparent",
             weight: 1,
-            opacity: FSI_OPACITY.borderOpacity,
-            fillColor: RISK_LEVELS[risk] || RISK_LEVELS["Low Risk"],
+            opacity: getBaseBorder(),
+            fillColor: showFsi
+              ? RISK_LEVELS[risk] || RISK_LEVELS["Low Risk"]
+              : "transparent",
             fillOpacity: getBaseFill(),
           };
         },
@@ -1879,24 +1987,35 @@ function ZamboangaMask({
           let clickOpened = false;
 
           layer.on("mouseover", function () {
+            const showFsi = fsiVisibleRef.current;
             if (mapModeRef.current === "barangay") {
-              if (prevSelectedLayerRef.current !== this) {
-                this.setStyle({
-                  fillOpacity: FSI_OPACITY.hover,
-                  weight: 2,
-                });
+              if (prevSelectedLayerRef.current !== this && showFsi) {
+                this.setStyle({ fillOpacity: FSI_OPACITY.hover, weight: 2 });
+              } else {
+                this.setStyle({ weight: 2 });
               }
               return;
             }
-            this.setStyle({ fillOpacity: FSI_OPACITY.hover, weight: 2 });
+            if (showFsi) {
+              this.setStyle({ fillOpacity: FSI_OPACITY.hover, weight: 2 });
+            } else {
+              this.setStyle({ weight: 2, fillOpacity: 0, opacity: 0 });
+            }
             if (!clickOpened) this.openTooltip();
           });
 
           layer.on("mouseout", function () {
             if (prevSelectedLayerRef.current === this) return;
+            const showFsi = fsiVisibleRef.current;
+            const risk = this.feature?.properties?.fsi_risk || "Low Risk";
             this.setStyle({
+              fillColor: showFsi
+                ? RISK_LEVELS[risk] || RISK_LEVELS["Low Risk"]
+                : "transparent",
+              color: showFsi ? "#ffffff" : "transparent",
               fillOpacity: getBaseFill(),
               weight: 1,
+              opacity: getBaseBorder(),
             });
             if (!clickOpened) this.closeTooltip();
           });
@@ -1928,24 +2047,45 @@ function ZamboangaMask({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, onBoundaryLoaded, onBarangaysLoaded]);
 
-  // Adjust FSI fill opacity live when a QGIS raster is toggled on/off,
-  // without removing the layer (so borders/tooltips/clicks keep working).
+  // Live-update FSI styles when toggled
   useEffect(() => {
     const layer = barangayLayerRef.current;
     if (!layer) return;
+
+    // Loop through every single polygon and force the style update
     layer.eachLayer((l) => {
-      if (l === prevSelectedLayerRef.current) return; // keep selected highlight untouched
-      l.setStyle({ fillOpacity: getBaseFill() });
+      const feature = l.feature;
+      const risk = feature?.properties?.fsi_risk || "Low Risk";
+      const showFsi = fsiVisibleRef.current;
+
+      l.setStyle({
+        color: showFsi ? "#ffffff" : "transparent",
+        weight: 1,
+        opacity: getBaseBorder(),
+        fillColor: showFsi ? RISK_LEVELS[risk] : "transparent",
+        fillOpacity: getBaseFill(),
+      });
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rasterActive]);
+
+    // Force Leaflet to redraw the SVG layer
+    if (layer.redraw) {
+      layer.redraw();
+    }
+  }, [rasterActive, fsiVisible]);
 
   useEffect(() => {
     if (prevSelectedLayerRef.current) {
+      const showFsi = fsiVisibleRef.current;
+      const risk =
+        prevSelectedLayerRef.current.feature?.properties?.fsi_risk ||
+        "Low Risk";
       prevSelectedLayerRef.current.setStyle({
-        color: "#ffffff",
+        fillColor: showFsi
+          ? RISK_LEVELS[risk] || RISK_LEVELS["Low Risk"]
+          : "transparent",
+        color: showFsi ? "#ffffff" : "transparent",
         weight: 1,
-        opacity: FSI_OPACITY.borderOpacity,
+        opacity: getBaseBorder(),
         fillOpacity: getBaseFill(),
       });
       prevSelectedLayerRef.current = null;
@@ -1958,8 +2098,8 @@ function ZamboangaMask({
     layer.setStyle({
       color: "#1a73e8",
       weight: 3,
-      opacity: 1,
-      fillOpacity: FSI_OPACITY.selected,
+      opacity: fsiVisible ? 1 : 0,
+      fillOpacity: fsiVisible ? FSI_OPACITY.selected : 0,
     });
     if (layer.bringToFront) layer.bringToFront();
     prevSelectedLayerRef.current = layer;
@@ -1972,7 +2112,7 @@ function ZamboangaMask({
         duration: 0.5,
       });
     }
-  }, [selectedBarangayName, map]);
+  }, [selectedBarangayName, fsiVisible, map]);
 
   return null;
 }
@@ -2076,6 +2216,62 @@ function QGISLayerControl({
   );
 }
 
+// Per-layer legend, positioned below the FSI legend on the right side.
+function QGISLegend({ layerKey, config, stats }) {
+  if (!layerKey || !config || !stats) return null;
+  const { minVal, maxVal } = stats;
+  if (minVal == null || maxVal == null) return null;
+  const stops = buildLegendStops(config.colorScale, minVal, maxVal);
+
+  return (
+    <div
+      className="absolute z-[1000]"
+      style={{
+        top: "220px",
+        right: "16px",
+        backgroundColor: "rgba(255,255,255,0.92)",
+        padding: "10px 12px",
+        borderRadius: "6px",
+        boxShadow: "0 1px 5px rgba(0,0,0,0.25)",
+        fontFamily: "Arial, sans-serif",
+        fontSize: "11px",
+        color: "#222",
+        minWidth: "180px",
+      }}
+    >
+      <div style={{ fontWeight: "bold", marginBottom: "6px" }}>
+        {config.name}
+      </div>
+      {stops.map((stop, i) => (
+        <div
+          key={i}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            marginTop: i === 0 ? 0 : "4px",
+          }}
+        >
+          <div
+            style={{
+              width: "18px",
+              height: "14px",
+              borderRadius: "2px",
+              marginRight: "8px",
+              backgroundColor: stop.color,
+              border: "1px solid rgba(0,0,0,0.15)",
+              flexShrink: 0,
+            }}
+          />
+          <span>
+            {formatRasterValue(stop.v0)} – {formatRasterValue(stop.v1)}
+            {config.unit || ""}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function QGISRasterLayer({
   layerKey,
   isActive,
@@ -2126,20 +2322,27 @@ function QGISRasterLayer({
         return;
       }
 
-      if (loadAttemptedRef.current && layerRef.current) return;
+      if (loadAttemptedRef.current && layerRef.current) {
+        return;
+      }
 
       const config = QGIS_LAYER_CONFIGS[layerKey];
+
       console.log(`[QGIS] Starting load for layer: ${layerKey}`);
+      console.log(`[QGIS] Target URL: ${config.path}`);
 
       try {
         onLoadingChange?.(layerKey, true);
         onLoadError?.(layerKey, null);
         loadAttemptedRef.current = true;
 
-        // signal makes the browser cancel the download when controller.abort() runs
         const response = await fetch(config.path, {
           signal: controller.signal,
         });
+
+        console.log(
+          `[QGIS] Response status for ${layerKey}: ${response.status} ${response.statusText}`,
+        );
 
         if (!response.ok) {
           throw new Error(
@@ -2147,16 +2350,26 @@ function QGISRasterLayer({
           );
         }
 
-        const arrayBuffer = await response.arrayBuffer(); // also aborts mid-body
+        const arrayBuffer = await response.arrayBuffer();
         if (cancelled) return;
+
+        console.log(
+          `[QGIS] Data received for ${layerKey}. Size: ${arrayBuffer.byteLength} bytes`,
+        );
 
         const tiff = await geotiff.fromArrayBuffer(arrayBuffer);
         const image = await tiff.getImage();
         const bbox = image.getBoundingBox();
+        console.log(`[QGIS] Raw bbox for ${layerKey}:`, bbox);
+        console.log(`[QGIS] GeoKeys:`, image.getGeoKeys?.());
         const width = image.getWidth();
         const height = image.getHeight();
         const data = await image.readRasters();
         if (cancelled) return;
+
+        console.log(
+          `[QGIS] TIFF parsed for ${layerKey}. Dimensions: ${width}x${height}`,
+        );
 
         let noDataValue = null;
         try {
@@ -2167,6 +2380,8 @@ function QGISRasterLayer({
         } catch {
           noDataValue = null;
         }
+
+        if (cancelled || !isMountedRef.current) return;
 
         const canvas = document.createElement("canvas");
         canvas.width = width;
@@ -2187,6 +2402,9 @@ function QGISRasterLayer({
         for (let i = 0; i < values.length; i++) {
           const idx = i * 4;
           if (noDataValue != null && values[i] === noDataValue) {
+            imageData.data[idx] = 0;
+            imageData.data[idx + 1] = 0;
+            imageData.data[idx + 2] = 0;
             imageData.data[idx + 3] = 0;
             continue;
           }
@@ -2197,6 +2415,7 @@ function QGISRasterLayer({
           imageData.data[idx + 2] = b;
           imageData.data[idx + 3] = 255;
         }
+
         ctx.putImageData(imageData, 0, 0);
 
         let outputCanvas = canvas;
@@ -2227,10 +2446,16 @@ function QGISRasterLayer({
         }
 
         const dataUrl = outputCanvas.toDataURL("image/png");
-        const bottomLeft = utmToLatLng(bbox[0], bbox[1]);
-        const topRight = utmToLatLng(bbox[2], bbox[3]);
 
-        if (cancelled) return;
+        const west = bbox[0];
+        const south = bbox[1];
+        const east = bbox[2];
+        const north = bbox[3];
+
+        const bottomLeft = utmToLatLng(west, south);
+        const topRight = utmToLatLng(east, north);
+
+        if (cancelled || !isMountedRef.current) return;
 
         if (layerRef.current) {
           map.removeLayer(layerRef.current);
@@ -2249,6 +2474,7 @@ function QGISRasterLayer({
             pane: "qgis-pane",
           },
         );
+
         overlay.addTo(map);
         layerRef.current = overlay;
 
@@ -2260,6 +2486,8 @@ function QGISRasterLayer({
           height,
           bbox,
           noDataValue,
+          minVal,
+          maxVal,
         });
 
         map.fitBounds(
@@ -2270,18 +2498,23 @@ function QGISRasterLayer({
           { padding: [50, 50] },
         );
       } catch (error) {
-        // Cancelling on purpose is not an error, so don't show it in the panel
         if (error.name === "AbortError" || cancelled) {
           console.log(`[QGIS] Cancelled load for ${layerKey}`);
           return;
         }
+
         console.error(`[QGIS] Failed to load ${layerKey}:`, error);
-        onLoadError?.(layerKey, error.message || "Failed to load layer");
-        onRasterLoaded?.(layerKey, null);
-        loadAttemptedRef.current = false;
+        console.error(`[QGIS] Failed URL: ${config.path}`);
+
+        if (isMountedRef.current) {
+          onLoadError?.(layerKey, error.message || "Failed to load layer");
+          onRasterLoaded?.(layerKey, null);
+          loadAttemptedRef.current = false;
+        }
       } finally {
-        // Runs even when cancelled, otherwise the ⏳ icon gets stuck
-        if (isMountedRef.current) onLoadingChange?.(layerKey, false);
+        if (isMountedRef.current) {
+          onLoadingChange?.(layerKey, false);
+        }
       }
     };
 
@@ -2289,13 +2522,13 @@ function QGISRasterLayer({
 
     return () => {
       cancelled = true;
-      controller.abort(); // cancels the in-flight request
+      controller.abort();
       if (layerRef.current) {
         map.removeLayer(layerRef.current);
         layerRef.current = null;
       }
       onRasterLoaded?.(layerKey, null);
-      onLoadingChange?.(layerKey, false); // clear the ⏳ immediately
+      onLoadingChange?.(layerKey, false);
       loadAttemptedRef.current = false;
     };
   }, [map, layerKey, isActive, onLoadingChange, onLoadError, onRasterLoaded]);
@@ -2936,6 +3169,8 @@ function FloodMap() {
   const [activeQGISLayers, setActiveQGISLayers] = useState([]);
   const [qgisLayerErrors, setQgisLayerErrors] = useState({});
   const [qgisLayerLoading, setQgisLayerLoading] = useState({});
+  const [qgisLayerStats, setQgisLayerStats] = useState({});
+  const [fsiVisible, setFsiVisible] = useState(true);
   const [selection, setSelection] = useState({
     mode: "idle",
     results: [],
@@ -2962,6 +3197,7 @@ function FloodMap() {
   const qgisRasterDataRef = useRef({});
 
   const hasQGISLayersActive = activeQGISLayers.length > 0;
+  const activeLayerKey = activeQGISLayers[0] || null;
 
   useEffect(() => {
     supabase
@@ -3045,6 +3281,7 @@ function FloodMap() {
     centerLocationRef.current?.();
   }, []);
 
+  // Only one QGIS raster layer active at a time.
   const handleLayerToggle = useCallback((layerKey) => {
     setActiveQGISLayers((prev) => (prev.includes(layerKey) ? [] : [layerKey]));
   }, []);
@@ -3063,8 +3300,20 @@ function FloodMap() {
   }, []);
 
   const handleRasterLoaded = useCallback((layerKey, data) => {
-    if (data) qgisRasterDataRef.current[layerKey] = data;
-    else delete qgisRasterDataRef.current[layerKey];
+    if (data) {
+      qgisRasterDataRef.current[layerKey] = data;
+      setQgisLayerStats((prev) => ({
+        ...prev,
+        [layerKey]: { minVal: data.minVal, maxVal: data.maxVal },
+      }));
+    } else {
+      delete qgisRasterDataRef.current[layerKey];
+      setQgisLayerStats((prev) => {
+        const next = { ...prev };
+        delete next[layerKey];
+        return next;
+      });
+    }
   }, []);
 
   const handleRequestClear = useCallback((fn) => {
@@ -3120,6 +3369,10 @@ function FloodMap() {
 
   const handleToggleFacilitiesVisibility = useCallback(() => {
     setFacilitiesVisible((v) => !v);
+  }, []);
+
+  const handleToggleFsi = useCallback(() => {
+    setFsiVisible((v) => !v);
   }, []);
 
   const effectiveHiddenFacilities = useMemo(() => {
@@ -3187,6 +3440,10 @@ function FloodMap() {
               border: none !important;
               box-shadow: none !important;
             }
+            /* FIX: Force pointer events on invisible SVG paths so tooltips still work */
+            .leaflet-interactive {
+              pointer-events: auto !important;
+            }
           `}</style>
           <MapContainer
             center={position}
@@ -3204,6 +3461,7 @@ function FloodMap() {
               onBoundaryLoaded={handleBoundaryLoaded}
               onBarangaysLoaded={handleBarangaysLoaded}
               rasterActive={hasQGISLayersActive}
+              fsiVisible={fsiVisible}
               mapMode={mapMode}
               selectedBarangayName={selectedBarangay?.name || null}
             />
@@ -3224,6 +3482,8 @@ function FloodMap() {
               onLoadError={handleQGISLoadError}
               onRasterLoaded={handleRasterLoaded}
             />
+
+            <QGISHoverTooltip rasterDataRef={qgisRasterDataRef} />
 
             <RoutingLayer
               facilities={facilities}
@@ -3250,7 +3510,10 @@ function FloodMap() {
               onCenterLocation={handleCenter}
               hasLocation={hasLocation}
             />
-            <LegendControl />
+            <LegendControl
+              fsiVisible={fsiVisible}
+              onToggleFsi={handleToggleFsi}
+            />
           </MapContainer>
 
           <QGISLayerControl
@@ -3258,6 +3521,12 @@ function FloodMap() {
             activeLayers={activeQGISLayers}
             layerErrors={qgisLayerErrors}
             layerLoading={qgisLayerLoading}
+          />
+
+          <QGISLegend
+            layerKey={activeLayerKey}
+            config={activeLayerKey ? QGIS_LAYER_CONFIGS[activeLayerKey] : null}
+            stats={activeLayerKey ? qgisLayerStats[activeLayerKey] : null}
           />
 
           <MapModeControl mode={mapMode} onModeChange={handleModeChange} />
