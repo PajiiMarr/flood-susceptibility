@@ -36,6 +36,28 @@ import {
 
 export const EVACUATION_CENTER_TYPE = "Evacuation Center";
 
+// ==========================================
+// FSI SERVER CONFIGURATION
+// ==========================================
+const USE_SERVER =
+  String(import.meta.env.VITE_USE_SERVER || "").toLowerCase() === "true";
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+
+// Two models exposed by the backend, both available at runtime.
+const MGWR_MODEL = import.meta.env.VITE_MGWR_MODEL || "mgwr";
+const STACKING_MODEL = import.meta.env.VITE_STACKING_MODEL || "stacking";
+
+// The FSI model used by default for map coloring. MGWR won on test AUC
+// (0.8285) and R² (0.5044); Stacking (0.8125) is the strongest on the
+// full 47-feature set. Toggle at runtime via the legend.
+const DEFAULT_FSI_MODEL = MGWR_MODEL;
+
+console.log(
+  `[FSI] server=${USE_SERVER ? "ON" : "OFF"} base=${API_BASE_URL} ` +
+    `models=[${MGWR_MODEL}, ${STACKING_MODEL}] default=${DEFAULT_FSI_MODEL}`,
+);
+
 const WORLD_RING = [
   [-90, -180],
   [90, -180],
@@ -102,20 +124,14 @@ function buildAzurePath(relativePath) {
     console.warn("VITE_BLOB_SAS_URL is not defined in .env");
     return "";
   }
-
   const [baseUrl, sasToken] = BLOB_SAS_URL.split("?");
-
   const encodedPath = relativePath
     .split("/")
     .map((segment) => encodeURIComponent(segment))
     .join("/");
-
   const finalUrl = sasToken
     ? `${baseUrl}/${encodedPath}?${sasToken}`
     : `${baseUrl}/${encodedPath}`;
-
-  console.log(`[Azure] Constructed URL for ${relativePath}:`, finalUrl);
-
   return finalUrl;
 }
 
@@ -165,7 +181,6 @@ function getRasterValueAtLatLng(latlng, info) {
   return value;
 }
 
-// ---- Legend / hover formatting helpers ----
 function formatRasterValue(value) {
   if (value == null || Number.isNaN(value)) return "N/A";
   const abs = Math.abs(value);
@@ -517,15 +532,242 @@ async function reverseGeocode(lat, lng) {
   return data.display_name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
 }
 
-// LegendControl now also renders the FSI show/hide toggle.
-function LegendControl({ fsiVisible, onToggleFsi }) {
-  const map = useMap();
-  const divRef = useRef(null);
-  const onToggleRef = useRef(onToggleFsi);
+// ==========================================
+// FSI SERVER HELPERS
+// ==========================================
+
+function getFeatureCentroid(feature) {
+  const geom = feature?.geometry;
+  if (!geom) return null;
+
+  let coords;
+  if (geom.type === "Polygon") {
+    coords = geom.coordinates[0];
+  } else if (geom.type === "MultiPolygon") {
+    let largest = null;
+    let largestArea = -1;
+    for (const poly of geom.coordinates) {
+      const ring = poly[0];
+      let area = 0;
+      for (let i = 0; i < ring.length - 1; i++) {
+        area += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+      }
+      area = Math.abs(area) / 2;
+      if (area > largestArea) {
+        largestArea = area;
+        largest = ring;
+      }
+    }
+    coords = largest;
+  } else {
+    return null;
+  }
+
+  if (!coords || coords.length === 0) return null;
+  const isClosed =
+    coords.length > 1 &&
+    coords[0][0] === coords[coords.length - 1][0] &&
+    coords[0][1] === coords[coords.length - 1][1];
+  const n = isClosed ? coords.length - 1 : coords.length;
+  if (n <= 0) return null;
+
+  let sumLng = 0;
+  let sumLat = 0;
+  for (let i = 0; i < n; i++) {
+    sumLng += coords[i][0];
+    sumLat += coords[i][1];
+  }
+  return { lng: sumLng / n, lat: sumLat / n };
+}
+
+async function fetchServerFsiPoint(
+  lat,
+  lng,
+  model = DEFAULT_FSI_MODEL,
+  { explain = false } = {},
+) {
+  const res = await fetch(`${API_BASE_URL}/api/predict/point`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      lat,
+      lng,
+      model,
+      explain,
+    }),
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j?.detail) detail = j.detail;
+    } catch {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+async function fetchServerFsiBatch(points, model = DEFAULT_FSI_MODEL) {
+  const res = await fetch(`${API_BASE_URL}/api/predict/batch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      explain: false,
+      points,
+    }),
+  });
+  if (!res.ok) throw new Error(`Batch failed: HTTP ${res.status}`);
+  return res.json();
+}
+
+// Resolve FSI per barangay using the given model. Returns a Map keyed
+// by barangay name -> { risk, probability, centroid, top_factors }.
+async function resolveBarangayFsi(features, model = DEFAULT_FSI_MODEL) {
+  const result = new Map();
+
+  if (!USE_SERVER) {
+    for (const f of features) {
+      const name = f.properties?.adm4_name || "";
+      result.set(name, {
+        risk: getRandomRiskLevel(),
+        probability: null,
+        centroid: getFeatureCentroid(f),
+        top_factors: [],
+      });
+    }
+    return result;
+  }
+
+  const order = [];
+  const points = [];
+  for (const f of features) {
+    const name = f.properties?.adm4_name || "";
+    const centroid = getFeatureCentroid(f);
+    if (!centroid) {
+      result.set(name, {
+        risk: "Low Risk",
+        probability: null,
+        centroid: null,
+        top_factors: [],
+      });
+      continue;
+    }
+    order.push({ name, lat: centroid.lat, lng: centroid.lng, centroid });
+    points.push({ lat: centroid.lat, lng: centroid.lng });
+  }
+
+  if (points.length === 0) return result;
+
+  const t0 = performance.now();
+  try {
+    const data = await fetchServerFsiBatch(points, model);
+    const results = data.results || [];
+    const dt = Math.round(performance.now() - t0);
+    console.log(
+      `[FSI][${model}] Batch: ${results.length}/${points.length} in ${dt}ms`,
+    );
+    for (let i = 0; i < order.length; i++) {
+      const r = results[i];
+      const o = order[i];
+      if (r && !r.error && typeof r.probability === "number") {
+        result.set(o.name, {
+          risk: r.risk_class || "Low Risk",
+          probability: r.probability,
+          centroid: o.centroid,
+          top_factors: [],
+        });
+      } else {
+        result.set(o.name, {
+          risk: "Low Risk",
+          probability: null,
+          centroid: o.centroid,
+          top_factors: [],
+          error: r?.error || "no result",
+        });
+      }
+    }
+  } catch (err) {
+    console.warn(
+      `[FSI][${model}] Batch failed (${err.message}); falling back to random`,
+    );
+    for (const o of order) {
+      result.set(o.name, {
+        risk: getRandomRiskLevel(),
+        probability: null,
+        centroid: o.centroid,
+        top_factors: [],
+      });
+    }
+  }
+
+  return result;
+}
+
+function useBarangayExplanation(barangay, model) {
+  const [factors, setFactors] = useState(barangay?.top_factors || []);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    onToggleRef.current = onToggleFsi;
+    setFactors(barangay?.top_factors || []);
+    setError(null);
+
+    if (!USE_SERVER) return;
+    if (!barangay) return;
+    if (
+      typeof barangay?.lat !== "number" ||
+      typeof barangay?.lng !== "number"
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    fetchServerFsiPoint(barangay.lat, barangay.lng, model, { explain: true })
+      .then((data) => {
+        if (!cancelled) setFactors(data.top_factors || []);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [barangay, model]);
+
+  return { factors, loading, error };
+}
+
+// ==========================================
+// LEGEND + MODEL TOGGLE
+// ==========================================
+function LegendControl({
+  fsiVisible,
+  onToggleFsi,
+  fsiModel,
+  onModelChange,
+  availableModels,
+}) {
+  const map = useMap();
+  const divRef = useRef(null);
+  const toggleRef = useRef(onToggleFsi);
+  const modelChangeRef = useRef(onModelChange);
+  const fsiModelRef = useRef(fsiModel);
+
+  useEffect(() => {
+    toggleRef.current = onToggleFsi;
   }, [onToggleFsi]);
+  useEffect(() => {
+    modelChangeRef.current = onModelChange;
+  }, [onModelChange]);
+  useEffect(() => {
+    fsiModelRef.current = fsiModel;
+  }, [fsiModel]);
 
   useEffect(() => {
     const legend = L.control({ position: "topright" });
@@ -538,7 +780,7 @@ function LegendControl({ fsiVisible, onToggleFsi }) {
       div.style.fontFamily = "Arial, sans-serif";
       div.style.fontSize = "12px";
       div.style.color = "black";
-      div.style.minWidth = "170px";
+      div.style.minWidth = "190px";
       L.DomEvent.disableClickPropagation(div);
       L.DomEvent.disableScrollPropagation(div);
       divRef.current = div;
@@ -554,7 +796,6 @@ function LegendControl({ fsiVisible, onToggleFsi }) {
   useEffect(() => {
     const div = divRef.current;
     if (!div) return;
-
     div.innerHTML = "";
 
     const header = document.createElement("div");
@@ -562,7 +803,7 @@ function LegendControl({ fsiVisible, onToggleFsi }) {
       "display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;";
 
     const title = document.createElement("strong");
-    title.textContent = "Flood Susceptibility Index";
+    title.textContent = "Flood Susceptibility";
     header.appendChild(title);
 
     const toggleBtn = document.createElement("button");
@@ -578,10 +819,40 @@ function LegendControl({ fsiVisible, onToggleFsi }) {
     toggleBtn.textContent = fsiVisible ? "ON" : "OFF";
     toggleBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      onToggleRef.current?.();
+      toggleRef.current?.();
     });
     header.appendChild(toggleBtn);
     div.appendChild(header);
+
+    // Model toggle
+    if (availableModels.length > 1) {
+      const modelRow = document.createElement("div");
+      modelRow.style.cssText =
+        "display:flex; gap:4px; margin-bottom:6px; padding-bottom:6px; border-bottom: 1px solid rgba(0,0,0,0.08);";
+
+      availableModels.forEach((m) => {
+        const btn = document.createElement("button");
+        const active = m === fsiModelRef.current;
+        btn.type = "button";
+        btn.textContent = m.toUpperCase();
+        btn.style.cssText = `
+          flex: 1;
+          border: 1px solid ${active ? "#1a73e8" : "#d0d0d0"};
+          background: ${active ? "#1a73e8" : "#fff"};
+          color: ${active ? "#fff" : "#444"};
+          font-size: 10px; font-weight: 600;
+          padding: 3px 6px; border-radius: 4px;
+          cursor: pointer; transition: all 0.15s ease;
+        `;
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (!active) modelChangeRef.current?.(m);
+        });
+        modelRow.appendChild(btn);
+      });
+
+      div.appendChild(modelRow);
+    }
 
     for (const [level, color] of Object.entries(RISK_LEVELS)) {
       const row = document.createElement("div");
@@ -600,17 +871,20 @@ function LegendControl({ fsiVisible, onToggleFsi }) {
       row.appendChild(label);
       div.appendChild(row);
     }
-  }, [fsiVisible]);
+  }, [fsiVisible, fsiModel, availableModels]);
 
   return null;
 }
+
+// ==========================================
+// MAP CONTROLS (unchanged)
+// ==========================================
 
 function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
   const map = useMap();
 
   useEffect(() => {
     const control = L.control({ position: "bottomright" });
-
     control.onAdd = () => {
       const container = L.DomUtil.create("div", "map-controls");
       container.style.backgroundColor = "white";
@@ -621,152 +895,103 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
       container.style.overflow = "hidden";
       container.style.width = "40px";
 
-      const locateBtn = document.createElement("button");
-      locateBtn.innerHTML = `
-        <svg viewBox="0 0 24 24" width="20" height="20" style="pointer-events: none;">
-          <path fill="#444" d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3c-.46-4.17-3.77-7.48-7.94-7.94V1h-2v2.06C6.83 3.52 3.52 6.83 3.06 11H1v2h2.06c.46 4.17 3.77 7.48 7.94 7.94V23h2v-2.06c4.17-.46 7.48-3.77 7.94-7.94H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/>
-        </svg>
-      `;
-      locateBtn.style.cssText = `
-        background: none; border: none; padding: 8px 10px;
-        display: flex; align-items: center; justify-content: center;
-        transition: background 0.2s; border-bottom: 1px solid #e0e0e0;
-        width: 100%; position: relative; cursor: pointer;
-      `;
-      locateBtn.title = "Find my location";
-      locateBtn.addEventListener("mouseenter", () => {
-        locateBtn.style.backgroundColor = "#f0f0f0";
-      });
-      locateBtn.addEventListener("mouseleave", () => {
-        locateBtn.style.backgroundColor = "transparent";
-      });
-      locateBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        onLocate?.();
-      });
+      const makeBtn = (svg, title, onClick, disabled = false) => {
+        const b = document.createElement("button");
+        b.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" style="pointer-events:none;">${svg}</svg>`;
+        b.style.cssText = `
+          background: none; border: none; padding: 8px 10px;
+          display: flex; align-items: center; justify-content: center;
+          transition: background 0.2s; width: 100%; cursor: pointer;
+          border-bottom: 1px solid #e0e0e0;
+          ${disabled ? "opacity: 0.4; pointer-events: none;" : ""}
+        `;
+        b.title = title;
+        b.addEventListener("mouseenter", () => {
+          if (!disabled) b.style.backgroundColor = "#f0f0f0";
+        });
+        b.addEventListener("mouseleave", () => {
+          b.style.backgroundColor = "transparent";
+        });
+        b.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (!disabled) onClick();
+        });
+        return b;
+      };
 
-      const centerBtn = document.createElement("button");
-      centerBtn.innerHTML = `
-        <svg viewBox="0 0 24 24" width="20" height="20" style="pointer-events: none;">
-          <path fill="#444" d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
-        </svg>
-      `;
-      centerBtn.style.cssText = `
-        background: none; border: none; padding: 8px 10px;
-        display: flex; align-items: center; justify-content: center;
-        transition: background 0.2s; border-bottom: 1px solid #e0e0e0;
-        width: 100%; cursor: pointer;
-        opacity: ${hasLocation ? "1" : "0.4"};
-        pointer-events: ${hasLocation ? "auto" : "none"};
-      `;
-      centerBtn.title = "Center on location";
-      centerBtn.addEventListener("mouseenter", () => {
-        if (hasLocation) centerBtn.style.backgroundColor = "#f0f0f0";
-      });
-      centerBtn.addEventListener("mouseleave", () => {
-        centerBtn.style.backgroundColor = "transparent";
-      });
-      centerBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (hasLocation) onCenterLocation?.();
-      });
-
-      const clearBtn = document.createElement("button");
-      clearBtn.innerHTML = `
-        <svg viewBox="0 0 24 24" width="20" height="20" style="pointer-events: none;">
-          <path fill="#444" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
-        </svg>
-      `;
-      clearBtn.style.cssText = `
-        background: none; border: none; padding: 8px 10px;
-        display: flex; align-items: center; justify-content: center;
-        transition: background 0.2s; width: 100%; cursor: pointer;
-        opacity: ${hasLocation ? "1" : "0.4"};
-        pointer-events: ${hasLocation ? "auto" : "none"};
-      `;
-      clearBtn.title = "Clear location";
-      clearBtn.addEventListener("mouseenter", () => {
-        if (hasLocation) clearBtn.style.backgroundColor = "#f0f0f0";
-      });
-      clearBtn.addEventListener("mouseleave", () => {
-        clearBtn.style.backgroundColor = "transparent";
-      });
-      clearBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (hasLocation) onClear?.();
-      });
-
-      container.appendChild(locateBtn);
-      container.appendChild(centerBtn);
-      container.appendChild(clearBtn);
+      container.appendChild(
+        makeBtn(
+          `<path fill="#444" d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3c-.46-4.17-3.77-7.48-7.94-7.94V1h-2v2.06C6.83 3.52 3.52 6.83 3.06 11H1v2h2.06c.46 4.17 3.77 7.48 7.94 7.94V23h2v-2.06c4.17-.46 7.48-3.77 7.94-7.94H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/>`,
+          "Find my location",
+          () => onLocate?.(),
+        ),
+      );
+      container.appendChild(
+        makeBtn(
+          `<path fill="#444" d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>`,
+          "Center on location",
+          () => onCenterLocation?.(),
+          !hasLocation,
+        ),
+      );
+      container.appendChild(
+        makeBtn(
+          `<path fill="#444" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>`,
+          "Clear location",
+          () => onClear?.(),
+          !hasLocation,
+        ),
+      );
       return container;
     };
-
     control.addTo(map);
 
     const zoomControl = L.control({ position: "bottomright" });
-
     zoomControl.onAdd = () => {
-      const zoomContainer = L.DomUtil.create("div", "zoom-controls");
-      zoomContainer.style.backgroundColor = "white";
-      zoomContainer.style.borderRadius = "8px";
-      zoomContainer.style.boxShadow = "0 2px 6px rgba(0,0,0,0.3)";
-      zoomContainer.style.overflow = "hidden";
-      zoomContainer.style.width = "40px";
-      zoomContainer.style.marginRight = "8px";
+      const c = L.DomUtil.create("div", "zoom-controls");
+      c.style.backgroundColor = "white";
+      c.style.borderRadius = "8px";
+      c.style.boxShadow = "0 2px 6px rgba(0,0,0,0.3)";
+      c.style.overflow = "hidden";
+      c.style.width = "40px";
+      c.style.marginRight = "8px";
 
-      const zoomInBtn = document.createElement("button");
-      zoomInBtn.innerHTML = `
-        <svg viewBox="0 0 24 24" width="20" height="20" style="pointer-events: none;">
-          <path fill="#444" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
-        </svg>
-      `;
-      zoomInBtn.style.cssText = `
-        background: none; border: none; padding: 6px 10px;
-        display: flex; align-items: center; justify-content: center;
-        transition: background 0.2s; border-bottom: 1px solid #e0e0e0;
-        width: 100%; cursor: pointer;
-      `;
-      zoomInBtn.title = "Zoom in";
-      zoomInBtn.addEventListener("mouseenter", () => {
-        zoomInBtn.style.backgroundColor = "#f0f0f0";
-      });
-      zoomInBtn.addEventListener("mouseleave", () => {
-        zoomInBtn.style.backgroundColor = "transparent";
-      });
-      zoomInBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        map.zoomIn();
-      });
-
-      const zoomOutBtn = document.createElement("button");
-      zoomOutBtn.innerHTML = `
-        <svg viewBox="0 0 24 24" width="20" height="20" style="pointer-events: none;">
-          <path fill="#444" d="M5 13h14v-2H5v2z"/>
-        </svg>
-      `;
-      zoomOutBtn.style.cssText = `
-        background: none; border: none; padding: 6px 10px;
-        display: flex; align-items: center; justify-content: center;
-        transition: background 0.2s; width: 100%; cursor: pointer;
-      `;
-      zoomOutBtn.title = "Zoom out";
-      zoomOutBtn.addEventListener("mouseenter", () => {
-        zoomOutBtn.style.backgroundColor = "#f0f0f0";
-      });
-      zoomOutBtn.addEventListener("mouseleave", () => {
-        zoomOutBtn.style.backgroundColor = "transparent";
-      });
-      zoomOutBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        map.zoomOut();
-      });
-
-      zoomContainer.appendChild(zoomInBtn);
-      zoomContainer.appendChild(zoomOutBtn);
-      return zoomContainer;
+      const makeZoom = (svg, title, fn) => {
+        const b = document.createElement("button");
+        b.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" style="pointer-events:none;">${svg}</svg>`;
+        b.style.cssText = `
+          background: none; border: none; padding: 6px 10px;
+          display: flex; align-items: center; justify-content: center;
+          transition: background 0.2s; width: 100%; cursor: pointer;
+          border-bottom: 1px solid #e0e0e0;
+        `;
+        b.title = title;
+        b.addEventListener("mouseenter", () => {
+          b.style.backgroundColor = "#f0f0f0";
+        });
+        b.addEventListener("mouseleave", () => {
+          b.style.backgroundColor = "transparent";
+        });
+        b.addEventListener("click", (e) => {
+          e.stopPropagation();
+          fn();
+        });
+        return b;
+      };
+      c.appendChild(
+        makeZoom(
+          `<path fill="#444" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>`,
+          "Zoom in",
+          () => map.zoomIn(),
+        ),
+      );
+      c.appendChild(
+        makeZoom(`<path fill="#444" d="M5 13h14v-2H5v2z"/>`, "Zoom out", () =>
+          map.zoomOut(),
+        ),
+      );
+      return c;
     };
-
     zoomControl.addTo(map);
 
     return () => {
@@ -800,7 +1025,6 @@ function MapModeControl({ mode, onModeChange }) {
     transition: "all 0.15s ease",
     whiteSpace: "nowrap",
   };
-
   const activeStyle = {
     ...baseBtnStyle,
     backgroundColor: "#1a73e8",
@@ -808,7 +1032,6 @@ function MapModeControl({ mode, onModeChange }) {
     fontWeight: "600",
     boxShadow: "0 1px 4px rgba(26,115,232,0.4)",
   };
-
   const inactiveStyle = {
     ...baseBtnStyle,
     backgroundColor: "transparent",
@@ -870,29 +1093,26 @@ function MapSearchControl({ cityBoundary, onSelectLocation }) {
   useEffect(() => {
     onSelectRef.current = onSelectLocation;
   }, [onSelectLocation]);
-
   useEffect(() => {
     boundaryRef.current = cityBoundary;
   }, [cityBoundary]);
-
   useEffect(() => {
     if (!containerRef.current) return;
     L.DomEvent.disableClickPropagation(containerRef.current);
     L.DomEvent.disableScrollPropagation(containerRef.current);
   }, []);
-
   useEffect(() => {
-    const handleClickOutside = (e) => {
+    const onOut = (e) => {
       if (containerRef.current && !containerRef.current.contains(e.target)) {
         setShowResults(false);
       }
     };
-    document.addEventListener("click", handleClickOutside);
-    return () => document.removeEventListener("click", handleClickOutside);
+    document.addEventListener("click", onOut);
+    return () => document.removeEventListener("click", onOut);
   }, []);
 
-  const doSearch = useCallback(async (searchQuery) => {
-    if (!searchQuery || searchQuery.trim().length < 3) {
+  const doSearch = useCallback(async (q) => {
+    if (!q || q.trim().length < 3) {
       setResults([]);
       setShowResults(false);
       setLoading(false);
@@ -908,7 +1128,7 @@ function MapSearchControl({ cityBoundary, onSelectLocation }) {
       const url =
         `${NOMINATIM_BASE}/search?format=json&limit=6&countrycodes=ph` +
         `&viewbox=${viewbox}&bounded=1` +
-        `&q=${encodeURIComponent(`${searchQuery}, Zamboanga City, Philippines`)}`;
+        `&q=${encodeURIComponent(`${q}, Zamboanga City, Philippines`)}`;
       const res = await fetch(url, { headers: { "Accept-Language": "en" } });
       const data = await res.json();
       setResults(data || []);
@@ -921,14 +1141,14 @@ function MapSearchControl({ cityBoundary, onSelectLocation }) {
     }
   }, []);
 
-  const handleInputChange = (e) => {
-    const value = e.target.value;
-    setQuery(value);
+  const onChange = (e) => {
+    const v = e.target.value;
+    setQuery(v);
     clearTimeout(debounceTimerRef.current);
-    debounceTimerRef.current = setTimeout(() => doSearch(value), 400);
+    debounceTimerRef.current = setTimeout(() => doSearch(v), 400);
   };
 
-  const handleSelect = (item) => {
+  const onSelect = (item) => {
     setQuery(item.display_name);
     setResults([]);
     setShowResults(false);
@@ -954,7 +1174,7 @@ function MapSearchControl({ cityBoundary, onSelectLocation }) {
       <div
         style={{
           position: "relative",
-          background: "rgba(255, 255, 255, 0.75)",
+          background: "rgba(255,255,255,0.75)",
           backdropFilter: "blur(12px)",
           WebkitBackdropFilter: "blur(12px)",
           borderRadius: "10px",
@@ -969,14 +1189,13 @@ function MapSearchControl({ cityBoundary, onSelectLocation }) {
             type="text"
             placeholder="Search a place in Zamboanga City…"
             value={query}
-            onChange={handleInputChange}
+            onChange={onChange}
             onFocus={() => {
               if (results.length > 0) setShowResults(true);
             }}
             className="pl-8 h-9 text-sm bg-white/70 border-white/60 focus-visible:bg-white/95 focus-visible:ring-1 focus-visible:ring-primary/40 placeholder:text-muted-foreground/70"
           />
         </div>
-
         {showResults && (
           <div
             style={{
@@ -984,7 +1203,7 @@ function MapSearchControl({ cityBoundary, onSelectLocation }) {
               top: "calc(100% + 6px)",
               left: 0,
               right: 0,
-              background: "rgba(255, 255, 255, 0.95)",
+              background: "rgba(255,255,255,0.95)",
               backdropFilter: "blur(12px)",
               WebkitBackdropFilter: "blur(12px)",
               borderRadius: "10px",
@@ -1007,7 +1226,7 @@ function MapSearchControl({ cityBoundary, onSelectLocation }) {
                 <button
                   key={idx}
                   type="button"
-                  onClick={() => handleSelect(item)}
+                  onClick={() => onSelect(item)}
                   className="w-full text-left px-3 py-2 text-xs hover:bg-primary/5 active:bg-primary/10 transition-colors border-b border-black/5 last:border-b-0"
                 >
                   {item.display_name}
@@ -1021,27 +1240,30 @@ function MapSearchControl({ cityBoundary, onSelectLocation }) {
   );
 }
 
+// ==========================================
+// POI + EVAC LAYERS
+// ==========================================
+
 const TYPE_ICONS = {
   Pharmacy: "💊",
   Hospital: "🏥",
   Clinic: "🏥",
   "Medical Office": "👨‍⚕️",
 };
-
 const DEFAULT_MARKER_EMOJI = "📍";
 
 function getDominantEmoji(markers) {
   const counts = {};
-  for (const marker of markers) {
-    const type = marker.options.facilityType;
-    const emoji = TYPE_ICONS[type] || DEFAULT_MARKER_EMOJI;
-    counts[emoji] = (counts[emoji] || 0) + 1;
+  for (const m of markers) {
+    const t = m.options.facilityType;
+    const e = TYPE_ICONS[t] || DEFAULT_MARKER_EMOJI;
+    counts[e] = (counts[e] || 0) + 1;
   }
   const entries = Object.entries(counts);
   if (entries.length === 0) return DEFAULT_MARKER_EMOJI;
   entries.sort((a, b) => b[1] - a[1]);
   const topCount = entries[0][1];
-  const topEmojis = entries.filter(([, count]) => count === topCount);
+  const topEmojis = entries.filter(([, c]) => c === topCount);
   return topEmojis.length === 1 ? topEmojis[0][0] : DEFAULT_MARKER_EMOJI;
 }
 
@@ -1060,33 +1282,29 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
     visibleRef.current = visible;
     setRenderTick((t) => t + 1);
   }, [visible]);
-
   useEffect(() => {
     onFacilitiesRef.current = onFacilities;
   }, [onFacilities]);
-
   useEffect(() => {
-    const handleZoomEnd = () => setCurrentZoom(map.getZoom());
-    map.on("zoomend", handleZoomEnd);
-    return () => map.off("zoomend", handleZoomEnd);
+    const h = () => setCurrentZoom(map.getZoom());
+    map.on("zoomend", h);
+    return () => map.off("zoomend", h);
   }, [map]);
 
   const renderFacilities = useCallback(
     (rows, zoomLevel) => {
       if (!map) return;
-
       const hiddenIds = new Set(
         hiddenFacilities.map((f) => `${f.lat},${f.lon}`),
       );
       const visibleRows = rows.filter(
-        (row) => !hiddenIds.has(`${row.lat},${row.lon}`),
+        (r) => !hiddenIds.has(`${r.lat},${r.lon}`),
       );
 
       if (clusterRef.current) {
         map.removeLayer(clusterRef.current);
         clusterRef.current = null;
       }
-
       if (!visibleRef.current || visibleRows.length === 0) {
         setLoading(false);
         return;
@@ -1095,19 +1313,13 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
       const shouldCluster = zoomLevel < 13;
 
       if (shouldCluster) {
-        const clusterGroup = L.markerClusterGroup({
+        const cg = L.markerClusterGroup({
           maxClusterRadius: 40,
           iconCreateFunction: function (cluster) {
             const emoji = getDominantEmoji(cluster.getAllChildMarkers());
             const size = 36;
             const div = document.createElement("div");
-            div.style.width = size + "px";
-            div.style.height = size + "px";
-            div.style.display = "flex";
-            div.style.alignItems = "center";
-            div.style.justifyContent = "center";
-            div.style.fontSize = "24px";
-            div.style.textShadow = "0 0 4px rgba(255,255,255,0.8)";
+            div.style.cssText = `width:${size}px;height:${size}px;display:flex;align-items:center;justify-content:center;font-size:24px;text-shadow:0 0 4px rgba(255,255,255,0.8);`;
             div.innerHTML = emoji;
             return L.divIcon({
               html: div.outerHTML,
@@ -1117,15 +1329,14 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
           },
         });
 
-        const facilitiesList = visibleRows.map((row) => {
+        const markers = visibleRows.map((row) => {
           const emoji = TYPE_ICONS[row.type] || DEFAULT_MARKER_EMOJI;
           const icon = L.divIcon({
-            html: `<div style="font-size:24px; text-shadow: 0 0 2px white;">${emoji}</div>`,
+            html: `<div style="font-size:24px;text-shadow:0 0 2px white;">${emoji}</div>`,
             iconSize: [24, 24],
             className: "custom-poi-marker",
           });
-
-          const popupContent = `
+          const popup = `
           <div style="min-width: 150px;">
             <strong>${row.name}</strong><br>
             Type: ${row.type}<br>
@@ -1133,30 +1344,25 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
             ${row.addr_city ? `City: ${row.addr_city}<br>` : ""}
             ${row.phone ? `Phone: ${row.phone}<br>` : ""}
             ${row.website ? `Website: <a href="${row.website}" target="_blank">link</a>` : ""}
-          </div>
-        `;
-
+          </div>`;
           return L.marker([row.lat, row.lon], {
             icon,
             facilityType: row.type,
-          }).bindPopup(popupContent);
+          }).bindPopup(popup);
         });
-
-        clusterGroup.addLayers(facilitiesList);
-        clusterGroup.addTo(map);
-        clusterRef.current = clusterGroup;
+        cg.addLayers(markers);
+        cg.addTo(map);
+        clusterRef.current = cg;
       } else {
-        const markerGroup = L.layerGroup();
-
+        const group = L.layerGroup();
         visibleRows.forEach((row) => {
           const emoji = TYPE_ICONS[row.type] || DEFAULT_MARKER_EMOJI;
           const icon = L.divIcon({
-            html: `<div style="font-size:24px; text-shadow: 0 0 2px white;">${emoji}</div>`,
+            html: `<div style="font-size:24px;text-shadow:0 0 2px white;">${emoji}</div>`,
             iconSize: [24, 24],
             className: "custom-poi-marker",
           });
-
-          const popupContent = `
+          const popup = `
           <div style="min-width: 150px;">
             <strong>${row.name}</strong><br>
             Type: ${row.type}<br>
@@ -1164,45 +1370,40 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
             ${row.addr_city ? `City: ${row.addr_city}<br>` : ""}
             ${row.phone ? `Phone: ${row.phone}<br>` : ""}
             ${row.website ? `Website: <a href="${row.website}" target="_blank">link</a>` : ""}
-          </div>
-        `;
-
-          const marker = L.marker([row.lat, row.lon], {
-            icon,
-            facilityType: row.type,
-          }).bindPopup(popupContent);
-
-          markerGroup.addLayer(marker);
+          </div>`;
+          group.addLayer(
+            L.marker([row.lat, row.lon], {
+              icon,
+              facilityType: row.type,
+            }).bindPopup(popup),
+          );
         });
-
-        markerGroup.addTo(map);
-        clusterRef.current = markerGroup;
+        group.addTo(map);
+        clusterRef.current = group;
       }
-
       setLoading(false);
     },
     [map, hiddenFacilities],
   );
 
-  const renderFacilitiesRef = useRef(renderFacilities);
+  const renderRef = useRef(renderFacilities);
   useEffect(() => {
-    renderFacilitiesRef.current = renderFacilities;
+    renderRef.current = renderFacilities;
   }, [renderFacilities]);
 
   useEffect(() => {
-    let isMounted = true;
-
+    let mounted = true;
     const fetchPois = async () => {
       try {
         setLoading(true);
         setError(null);
-        const { data, error: queryError } = await supabase
+        const { data, error: qe } = await supabase
           .from("health_facilities")
           .select(
             "name, type, lat, lon, addr_street, addr_city, phone, website",
           );
-        if (queryError) throw queryError;
-        if (isMounted && data) {
+        if (qe) throw qe;
+        if (mounted && data) {
           allFacilitiesRef.current = data;
           onFacilitiesRef.current?.(
             data.map((row) => ({
@@ -1216,20 +1417,18 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
               website: row.website,
             })),
           );
-          renderFacilitiesRef.current?.(data, map.getZoom());
+          renderRef.current?.(data, map.getZoom());
         }
       } catch (err) {
-        if (isMounted) {
+        if (mounted) {
           setError(`Failed to load health facilities: ${err.message}`);
           setLoading(false);
         }
       }
     };
-
     fetchPois();
-
     return () => {
-      isMounted = false;
+      mounted = false;
       if (clusterRef.current && map) {
         map.removeLayer(clusterRef.current);
         clusterRef.current = null;
@@ -1253,7 +1452,7 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
   const [currentZoom, setCurrentZoom] = useState(map.getZoom());
   const clusterRef = useRef(null);
   const allCentersRef = useRef([]);
-  const onCentersLoadedRef = useRef(onCentersLoaded);
+  const onCentersRef = useRef(onCentersLoaded);
   const visibleRef = useRef(visible);
   const [renderTick, setRenderTick] = useState(0);
 
@@ -1261,18 +1460,16 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
     visibleRef.current = visible;
     setRenderTick((t) => t + 1);
   }, [visible]);
-
   useEffect(() => {
-    onCentersLoadedRef.current = onCentersLoaded;
+    onCentersRef.current = onCentersLoaded;
   }, [onCentersLoaded]);
-
   useEffect(() => {
-    const handleZoomEnd = () => setCurrentZoom(map.getZoom());
-    map.on("zoomend", handleZoomEnd);
-    return () => map.off("zoomend", handleZoomEnd);
+    const h = () => setCurrentZoom(map.getZoom());
+    map.on("zoomend", h);
+    return () => map.off("zoomend", h);
   }, [map]);
 
-  const makePopupHtml = (row) => `
+  const popupHtml = (row) => `
     <div style="min-width: 210px; font-family: Arial, sans-serif; font-size: 12px; line-height: 1.5;">
       <strong style="font-size: 13px;">${row.name}</strong><br>
       <span style="color:#555;">District: ${row.district || "N/A"}</span><br>
@@ -1281,30 +1478,26 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
       ${row.floor_area_sqm != null ? `Floor area: ${row.floor_area_sqm} sqm<br>` : ""}
       ${row.remarks ? `<em style="color:#b00020;">${row.remarks}</em><br>` : ""}
       <span style="font-size:10px; color:#999;">Center No. ${row.center_no}</span>
-    </div>
-  `;
+    </div>`;
 
-  const makeMarkerIcon = () =>
+  const markerIcon = () =>
     L.divIcon({
-      html: `<div style="font-size:22px; line-height:22px; text-shadow:0 0 3px #fff, 0 0 2px #fff;">⛺</div>`,
+      html: `<div style="font-size:22px;line-height:22px;text-shadow:0 0 3px #fff,0 0 2px #fff;">⛺</div>`,
       iconSize: [24, 24],
       className: "custom-evac-marker",
     });
 
-  const renderCenters = useCallback(
+  const render = useCallback(
     (rows, zoomLevel) => {
       if (!map) return;
-
       if (clusterRef.current) {
         map.removeLayer(clusterRef.current);
         clusterRef.current = null;
       }
-
       if (!visibleRef.current) {
         setLoading(false);
         return;
       }
-
       const valid = rows
         .map((r) => ({
           ...r,
@@ -1314,37 +1507,26 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
         .filter(
           (r) => Number.isFinite(r.latitude) && Number.isFinite(r.longitude),
         );
-
-      const skipped = rows.length - valid.length;
-      if (skipped > 0) {
-        console.warn(
-          `Evacuation centers: ${skipped} row(s) skipped — missing lat/lng (likely marked "To be updated").`,
-        );
-      }
-
       if (valid.length === 0) {
         setLoading(false);
         return;
       }
 
-      const shouldCluster = zoomLevel < 13;
-
-      if (shouldCluster) {
-        const clusterGroup = L.markerClusterGroup({
+      if (zoomLevel < 13) {
+        const cg = L.markerClusterGroup({
           maxClusterRadius: 45,
           iconCreateFunction: function (cluster) {
             const count = cluster.getChildCount();
             const size = 34 + Math.min(20, count);
             const div = document.createElement("div");
             div.style.cssText = `
-              width:${size}px; height:${size}px;
-              display:flex; align-items:center; justify-content:center;
-              background:#d32f2f; color:#fff; font-weight:bold;
-              font-family: Arial, sans-serif; font-size:13px;
-              border-radius:50%; border:2px solid #fff;
-              box-shadow:0 1px 4px rgba(0,0,0,0.4);
-            `;
-            div.innerHTML = `⛺<span style="font-size:11px; margin-left:2px;">${count}</span>`;
+              width:${size}px;height:${size}px;
+              display:flex;align-items:center;justify-content:center;
+              background:#d32f2f;color:#fff;font-weight:bold;
+              font-family:Arial,sans-serif;font-size:13px;
+              border-radius:50%;border:2px solid #fff;
+              box-shadow:0 1px 4px rgba(0,0,0,0.4);`;
+            div.innerHTML = `⛺<span style="font-size:11px;margin-left:2px;">${count}</span>`;
             return L.divIcon({
               html: div.outerHTML,
               iconSize: [size, size],
@@ -1352,66 +1534,60 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
             });
           },
         });
-
         valid.forEach((row) => {
-          L.marker([row.latitude, row.longitude], { icon: makeMarkerIcon() })
-            .bindPopup(makePopupHtml(row))
-            .addTo(clusterGroup);
+          L.marker([row.latitude, row.longitude], { icon: markerIcon() })
+            .bindPopup(popupHtml(row))
+            .addTo(cg);
         });
-
-        clusterGroup.addTo(map);
-        clusterRef.current = clusterGroup;
+        cg.addTo(map);
+        clusterRef.current = cg;
       } else {
         const group = L.layerGroup();
         valid.forEach((row) => {
-          L.marker([row.latitude, row.longitude], { icon: makeMarkerIcon() })
-            .bindPopup(makePopupHtml(row))
+          L.marker([row.latitude, row.longitude], { icon: markerIcon() })
+            .bindPopup(popupHtml(row))
             .addTo(group);
         });
         group.addTo(map);
         clusterRef.current = group;
       }
-
       setLoading(false);
     },
     [map],
   );
 
-  const renderCentersRef = useRef(renderCenters);
+  const renderRef = useRef(render);
   useEffect(() => {
-    renderCentersRef.current = renderCenters;
-  }, [renderCenters]);
+    renderRef.current = render;
+  }, [render]);
 
   useEffect(() => {
-    let isMounted = true;
-
-    const fetchCenters = async () => {
+    let mounted = true;
+    const fetch = async () => {
       try {
         setLoading(true);
         setError(null);
-        const { data, error: queryError } = await supabase
+        const { data, error: qe } = await supabase
           .from("evacuation_centers")
           .select(
             "id, center_no, district, name, location, proximity, floor_area_sqm, remarks, latitude, longitude",
           );
-        if (queryError) throw queryError;
-        if (isMounted && data) {
+        if (qe) throw qe;
+        if (mounted && data) {
           allCentersRef.current = data;
-          onCentersLoadedRef.current?.(data);
-          renderCentersRef.current?.(data, map.getZoom());
+          onCentersRef.current?.(data);
+          renderRef.current?.(data, map.getZoom());
         }
       } catch (err) {
-        if (isMounted) {
+        if (mounted) {
           setError(`Failed to load evacuation centers: ${err.message}`);
           setLoading(false);
         }
       }
     };
-
-    fetchCenters();
-
+    fetch();
     return () => {
-      isMounted = false;
+      mounted = false;
       if (clusterRef.current && map) {
         map.removeLayer(clusterRef.current);
         clusterRef.current = null;
@@ -1421,13 +1597,14 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
 
   useEffect(() => {
     if (allCentersRef.current.length > 0) {
-      renderCenters(allCentersRef.current, currentZoom);
+      render(allCentersRef.current, currentZoom);
     }
-  }, [currentZoom, renderCenters, renderTick]);
+  }, [currentZoom, render, renderTick]);
 
   return null;
 }
 
+// MODIFIED: now returns probability + centroid + lat/lng for factors lookup
 function findBarangayForPoint(latlng, barangayData) {
   if (!barangayData) return null;
   const pt = [latlng.lng, latlng.lat];
@@ -1435,10 +1612,15 @@ function findBarangayForPoint(latlng, barangayData) {
     booleanPointInPolygon(pt, feature),
   );
   if (!match) return null;
+  const props = match.properties || {};
   return {
-    name: match.properties.adm4_name,
-    risk: match.properties.fsi_risk,
-    population: match.properties.population ?? null,
+    name: props.adm4_name,
+    risk: props.fsi_risk,
+    population: props.population ?? null,
+    probability: props.fsi_probability ?? null,
+    lat: props.centroid_lat ?? null,
+    lng: props.centroid_lng ?? null,
+    top_factors: [],
   };
 }
 
@@ -1483,6 +1665,7 @@ function RoutingLayer({
   const [errorMsg, setErrorMsg] = useState(null);
   const [outsideBoundary, setOutsideBoundary] = useState(false);
   const layerRef = useRef(null);
+
   const originBarangay = origin
     ? findBarangayForPoint(origin, barangayData)
     : null;
@@ -1491,12 +1674,10 @@ function RoutingLayer({
   useEffect(() => {
     mapModeRef.current = mapMode;
   }, [mapMode]);
-
   const barangayDataRef = useRef(barangayData);
   useEffect(() => {
     barangayDataRef.current = barangayData;
   }, [barangayData]);
-
   const onBarangaySelectRef = useRef(onBarangaySelect);
   useEffect(() => {
     onBarangaySelectRef.current = onBarangaySelect;
@@ -1525,11 +1706,10 @@ function RoutingLayer({
     onLocationChange?.(origin);
   }, [origin, onLocationChange]);
 
-  const isPointInsideBoundary = useCallback(
+  const isInsideBoundary = useCallback(
     (latlng) => {
       if (!cityBoundary) return true;
-      const pt = [latlng.lng, latlng.lat];
-      return booleanPointInPolygon(pt, cityBoundary);
+      return booleanPointInPolygon([latlng.lng, latlng.lat], cityBoundary);
     },
     [cityBoundary],
   );
@@ -1544,15 +1724,12 @@ function RoutingLayer({
           .map(evacCenterToFacility)
           .filter((f) => Number.isFinite(f.lat) && Number.isFinite(f.lon));
 
-        const activeTypes = selectedTypes || [];
-        const healthTypes = activeTypes.filter(
-          (t) => t !== EVACUATION_CENTER_TYPE,
-        );
-        const evacSelected = activeTypes.includes(EVACUATION_CENTER_TYPE);
+        const active = selectedTypes || [];
+        const healthTypes = active.filter((t) => t !== EVACUATION_CENTER_TYPE);
+        const evacSelected = active.includes(EVACUATION_CENTER_TYPE);
 
         let filtered;
-
-        if (activeTypes.length === 0) {
+        if (active.length === 0) {
           filtered = [...(facilities || []), ...evacAsFacility];
         } else {
           const parts = [];
@@ -1561,21 +1738,18 @@ function RoutingLayer({
               ...(facilities || []).filter((f) => healthTypes.includes(f.type)),
             );
           }
-          if (evacSelected) {
-            parts.push(...evacAsFacility);
-          }
+          if (evacSelected) parts.push(...evacAsFacility);
           filtered = parts;
         }
 
         if (filtered.length === 0) {
-          const names =
-            activeTypes.length === 0 ? "facilities" : activeTypes.join(", ");
+          const names = active.length === 0 ? "facilities" : active.join(", ");
           throw new Error(`No matching ${names} available`);
         }
 
-        const originCoords = [latlng.lat, latlng.lng];
-        const candidates = kNearestByHaversine(originCoords, filtered, 15);
-        const ranked = await fetchRoadDistances(originCoords, candidates);
+        const oc = [latlng.lat, latlng.lng];
+        const cands = kNearestByHaversine(oc, filtered, 15);
+        const ranked = await fetchRoadDistances(oc, cands);
         const valid = ranked.filter((r) => r.distanceMeters != null);
         if (valid.length === 0)
           throw new Error("No reachable facility found by road");
@@ -1583,18 +1757,16 @@ function RoutingLayer({
         const top = valid.slice(0, 3);
         const routes = await Promise.all(
           top.map(async (item) => {
-            const route = await fetchRoadRoute(originCoords, [
+            const r = await fetchRoadRoute(oc, [
               item.facility.lat,
               item.facility.lon,
             ]);
-            return { ...item, routeGeoJSON: route.geometry };
+            return { ...item, routeGeoJSON: r.geometry };
           }),
         );
         setResults(routes);
         setMode("done");
-
-        const nearestFacilities = top.map((item) => item.facility);
-        onNearestFacilitiesFound?.(nearestFacilities);
+        onNearestFacilitiesFound?.(top.map((i) => i.facility));
       } catch (err) {
         setErrorMsg(err.message);
         setMode("error");
@@ -1613,7 +1785,7 @@ function RoutingLayer({
   const handleNewOrigin = useCallback(
     (latlng) => {
       if (mode === "loading") return;
-      if (!isPointInsideBoundary(latlng)) {
+      if (!isInsideBoundary(latlng)) {
         setOutsideBoundary(true);
         setOrigin(latlng);
         setErrorMsg("Location is outside Zamboanga City boundary.");
@@ -1624,7 +1796,7 @@ function RoutingLayer({
       setOrigin(latlng);
       runSearch(latlng);
     },
-    [mode, isPointInsideBoundary, runSearch, onClearHighlight],
+    [mode, isInsideBoundary, runSearch, onClearHighlight],
   );
 
   const clearLocation = useCallback(() => {
@@ -1642,18 +1814,14 @@ function RoutingLayer({
   }, [map, onClearHighlight]);
 
   const centerLocation = useCallback(() => {
-    if (origin) {
-      map.setView([origin.lat, origin.lng], 14);
-    }
+    if (origin) map.setView([origin.lat, origin.lng], 14);
   }, [origin, map]);
 
   useMapEvents({
     click(e) {
       if (mapModeRef.current === "barangay") {
         const b = findBarangayForPoint(e.latlng, barangayDataRef.current);
-        if (b) {
-          onBarangaySelectRef.current?.(b);
-        }
+        if (b) onBarangaySelectRef.current?.(b);
         return;
       }
       handleNewOrigin(e.latlng);
@@ -1674,18 +1842,18 @@ function RoutingLayer({
         });
       },
       (err) => {
-        let message = err.message;
+        let msg = err.message;
         if (err.code === 1) {
-          message =
+          msg =
             "Location permission was denied. You can still click the map directly to find the nearest facility.";
         } else if (err.code === 2) {
-          message =
+          msg =
             "Your location couldn't be determined. Check that Location Services are enabled for your browser, or click the map directly instead.";
         } else if (err.code === 3) {
-          message =
+          msg =
             "Location request timed out. Try again, or click the map directly.";
         }
-        setErrorMsg(message);
+        setErrorMsg(msg);
         setMode("error");
         onClearHighlight?.();
       },
@@ -1693,26 +1861,20 @@ function RoutingLayer({
     );
   }, [handleNewOrigin, onClearHighlight]);
 
-  const resetOutsideBoundary = useCallback(() => {
-    setOutsideBoundary(false);
-  }, []);
+  const resetOutsideBoundary = useCallback(() => setOutsideBoundary(false), []);
 
   useEffect(() => {
     onRequestLocation?.(handleUseMyLocation);
   }, [handleUseMyLocation, onRequestLocation]);
-
   useEffect(() => {
     onRequestReset?.(resetOutsideBoundary);
   }, [resetOutsideBoundary, onRequestReset]);
-
   useEffect(() => {
     onRequestSearchSelect?.(handleNewOrigin);
   }, [handleNewOrigin, onRequestSearchSelect]);
-
   useEffect(() => {
     onRequestClear?.(clearLocation);
   }, [clearLocation, onRequestClear]);
-
   useEffect(() => {
     onRequestCenter?.(centerLocation);
   }, [centerLocation, onRequestCenter]);
@@ -1729,9 +1891,7 @@ function RoutingLayer({
   }, [selectedTypes, evacuationCenters]);
 
   useEffect(() => {
-    if (!origin) {
-      onClearHighlight?.();
-    }
+    if (!origin) onClearHighlight?.();
   }, [origin, onClearHighlight]);
 
   useEffect(() => {
@@ -1740,9 +1900,7 @@ function RoutingLayer({
       layerRef.current = null;
     }
     if (!origin) return;
-
     const group = L.layerGroup();
-
     L.marker(origin, {
       icon: L.divIcon({
         html: `<div style="font-size:26px;">📍</div>`,
@@ -1750,29 +1908,26 @@ function RoutingLayer({
         className: "custom-poi-marker",
       }),
     }).addTo(group);
-
     const bounds = L.latLngBounds(
       [origin.lat, origin.lng],
       [origin.lat, origin.lng],
     );
 
-    results.forEach((item, index) => {
-      const color = ROUTE_COLORS[index] || "#9e9e9e";
-      const facilityLatLng = [item.facility.lat, item.facility.lon];
-      bounds.extend(facilityLatLng);
-
-      L.marker(facilityLatLng, {
+    results.forEach((item, i) => {
+      const color = ROUTE_COLORS[i] || "#9e9e9e";
+      const ll = [item.facility.lat, item.facility.lon];
+      bounds.extend(ll);
+      L.marker(ll, {
         icon: L.divIcon({
-          html: `<div style="font-size:20px; background:${color}; color:white; border-radius:50%; width:24px; height:24px; display:flex; align-items:center; justify-content:center; font-weight:bold; box-shadow: 0 0 4px rgba(0,0,0,0.3);">${index + 1}</div>`,
+          html: `<div style="font-size:20px;background:${color};color:white;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-weight:bold;box-shadow:0 0 4px rgba(0,0,0,0.3);">${i + 1}</div>`,
           iconSize: [24, 24],
           className: "custom-poi-marker",
         }),
       })
         .bindPopup(
-          `<strong>#${index + 1} ${item.facility.name}</strong><br>${(item.distanceMeters / 1000).toFixed(2)} km, ${Math.round(item.durationSeconds / 60)} min`,
+          `<strong>#${i + 1} ${item.facility.name}</strong><br>${(item.distanceMeters / 1000).toFixed(2)} km, ${Math.round(item.durationSeconds / 60)} min`,
         )
         .addTo(group);
-
       if (item.routeGeoJSON) {
         L.geoJSON(item.routeGeoJSON, {
           style: { color, weight: 5, opacity: 0.9 },
@@ -1802,9 +1957,7 @@ function RoutingLayer({
   return null;
 }
 
-// ZamboangaMask now accepts rasterActive + fsiVisible.
-// Boundaries / maritime line are always rendered — only the barangay fill
-// opacity ever changes.
+// MODIFIED: FSI layer rebuilt when fsiModel changes
 function ZamboangaMask({
   onBoundaryLoaded,
   onBarangaysLoaded,
@@ -1812,6 +1965,7 @@ function ZamboangaMask({
   fsiVisible,
   mapMode,
   selectedBarangayName,
+  fsiModel,
 }) {
   const map = useMap();
   const barangayLayerRef = useRef(null);
@@ -1819,52 +1973,48 @@ function ZamboangaMask({
   const borderLayerRef = useRef(null);
   const maritimeLayerRef = useRef(null);
   const barangayLayersByNameRef = useRef({});
-  const prevSelectedLayerRef = useRef(null);
+  const prevSelectedRef = useRef(null);
+  const barangayDataRef = useRef(null);
+  const popMapRef = useRef(null);
 
   const rasterActiveRef = useRef(rasterActive);
   useEffect(() => {
     rasterActiveRef.current = rasterActive;
   }, [rasterActive]);
-
   const fsiVisibleRef = useRef(fsiVisible);
   useEffect(() => {
     fsiVisibleRef.current = fsiVisible;
   }, [fsiVisible]);
-
-  const getBaseFill = () => {
-    if (!fsiVisibleRef.current) return 0;
-    return rasterActiveRef.current ? 0.12 : FSI_OPACITY.normal;
-  };
-
-  const getBaseBorder = () => {
-    if (!fsiVisibleRef.current) return 0;
-    return FSI_OPACITY.borderOpacity;
-  };
-
   const mapModeRef = useRef(mapMode);
   useEffect(() => {
     mapModeRef.current = mapMode;
   }, [mapMode]);
 
-  useEffect(() => {
-    let maskLayer, borderLayer, barangayLayer, maritimeLayer;
+  const getBaseFill = () => {
+    if (!fsiVisibleRef.current) return 0;
+    return rasterActiveRef.current ? 0.12 : FSI_OPACITY.normal;
+  };
+  const getBaseBorder = () =>
+    fsiVisibleRef.current ? FSI_OPACITY.borderOpacity : 0;
 
+  // One-time load of boundaries + populations
+  useEffect(() => {
+    let cancelled = false;
     if (!map.getPane("fsi-pane")) {
       const pane = map.createPane("fsi-pane");
       pane.style.zIndex = 640;
     }
-
-    const tooltipPane = map.getPane("tooltipPane");
-    if (tooltipPane) {
-      tooltipPane.style.zIndex = 660;
-    }
+    const tp = map.getPane("tooltipPane");
+    if (tp) tp.style.zIndex = 660;
 
     Promise.all([
       fetch("/zamboanga_city_boundary.geojson").then((r) => r.json()),
       fetch("/zamboanga_city_barangays.geojson").then((r) => r.json()),
       fetchBarangayPopulations(),
       fetchZamboangaMaritimeBoundary(),
-    ]).then(([cityData, barangayData, popMap, maritimeGeoJSON]) => {
+    ]).then(([cityData, barangayData, popMap, maritime]) => {
+      if (cancelled) return;
+
       const feature = cityData.features[0];
       onBoundaryLoaded?.(feature);
 
@@ -1881,8 +2031,7 @@ function ZamboangaMask({
           coordinates: [WORLD_RING.map(([lat, lng]) => [lng, lat]), ...rings],
         },
       };
-
-      maskLayer = L.geoJSON(maskGeoJSON, {
+      maskLayerRef.current = L.geoJSON(maskGeoJSON, {
         style: {
           color: "transparent",
           weight: 0,
@@ -1891,16 +2040,13 @@ function ZamboangaMask({
         },
         interactive: false,
       }).addTo(map);
-      maskLayerRef.current = maskLayer;
-
-      borderLayer = L.geoJSON(cityData, {
+      borderLayerRef.current = L.geoJSON(cityData, {
         style: { color: "#e8401c", weight: 2.5, opacity: 1, fill: false },
         interactive: false,
       }).addTo(map);
-      borderLayerRef.current = borderLayer;
 
-      if (maritimeGeoJSON?.features?.length) {
-        maritimeLayer = L.geoJSON(maritimeGeoJSON, {
+      if (maritime?.features?.length) {
+        maritimeLayerRef.current = L.geoJSON(maritime, {
           style: {
             color: "#3388ff",
             weight: 1.5,
@@ -1909,72 +2055,114 @@ function ZamboangaMask({
           },
           interactive: false,
         }).addTo(map);
-        maritimeLayerRef.current = maritimeLayer;
       }
 
-      let unmatchedCount = 0;
-      const featuresWithRisk = barangayData.features.map((feature) => {
-        const barangayName = feature.properties.adm4_name || "";
+      barangayDataRef.current = barangayData;
+      popMapRef.current = popMap;
+    });
+
+    return () => {
+      cancelled = true;
+      if (maskLayerRef.current) map.removeLayer(maskLayerRef.current);
+      if (borderLayerRef.current) map.removeLayer(borderLayerRef.current);
+      if (barangayLayerRef.current) map.removeLayer(barangayLayerRef.current);
+      if (maritimeLayerRef.current) map.removeLayer(maritimeLayerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map]);
+
+  // (Re)build FSI layer whenever fsiModel changes
+  useEffect(() => {
+    let cancelled = false;
+    const build = async () => {
+      // Wait for the base data to be ready
+      let waited = 0;
+      while (!barangayDataRef.current && waited < 10000 && !cancelled) {
+        await new Promise((r) => setTimeout(r, 100));
+        waited += 100;
+      }
+      if (cancelled || !barangayDataRef.current) return;
+
+      const barangayData = barangayDataRef.current;
+      const popMap = popMapRef.current;
+
+      const fsiMap = await resolveBarangayFsi(barangayData.features, fsiModel);
+      if (cancelled) return;
+
+      let unmatched = 0;
+      const featuresWithRisk = barangayData.features.map((f) => {
+        const name = f.properties.adm4_name || "";
         let population = null;
-        for (const key of buildNameKeys(barangayName)) {
-          if (popMap.has(key)) {
-            population = popMap.get(key);
+        for (const k of buildNameKeys(name)) {
+          if (popMap?.has(k)) {
+            population = popMap.get(k);
             break;
           }
         }
-        if (population == null) unmatchedCount += 1;
+        if (population == null) unmatched += 1;
+        const fsi = fsiMap.get(name) || {};
         return {
-          ...feature,
+          ...f,
           properties: {
-            ...feature.properties,
-            fsi_risk: getRandomRiskLevel(),
+            ...f.properties,
+            fsi_risk: fsi.risk || "Low Risk",
+            fsi_probability: fsi.probability ?? null,
+            centroid_lat: fsi.centroid?.lat ?? null,
+            centroid_lng: fsi.centroid?.lng ?? null,
             population,
           },
         };
       });
-
-      if (unmatchedCount > 0) {
+      if (unmatched > 0) {
         console.warn(
-          `Population data: ${unmatchedCount} barangay(s) had no match in the PSA spreadsheet — check for name spelling differences.`,
+          `Population data: ${unmatched} barangay(s) unmatched in PSA spreadsheet.`,
         );
       }
 
-      const updatedBarangayData = {
-        ...barangayData,
-        features: featuresWithRisk,
-      };
+      const updated = { ...barangayData, features: featuresWithRisk };
+      onBarangaysLoaded?.(updated);
 
-      onBarangaysLoaded?.(updatedBarangayData);
+      // Remove existing barangay layer, add new one
+      if (barangayLayerRef.current) {
+        map.removeLayer(barangayLayerRef.current);
+      }
+      barangayLayersByNameRef.current = {};
+      prevSelectedRef.current = null;
 
-      barangayLayer = L.geoJSON(updatedBarangayData, {
+      const layer = L.geoJSON(updated, {
         pane: "fsi-pane",
-        style: (feature) => {
-          const risk = feature?.properties?.fsi_risk || "Low Risk";
-          const showFsi = fsiVisibleRef.current;
+        style: (feat) => {
+          const risk = feat?.properties?.fsi_risk || "Low Risk";
+          const show = fsiVisibleRef.current;
           return {
-            color: showFsi ? "#ffffff" : "transparent",
+            color: show ? "#ffffff" : "transparent",
             weight: 1,
             opacity: getBaseBorder(),
-            fillColor: showFsi
+            fillColor: show
               ? RISK_LEVELS[risk] || RISK_LEVELS["Low Risk"]
               : "transparent",
             fillOpacity: getBaseFill(),
           };
         },
         interactive: true,
-        onEachFeature: (feature, layer) => {
-          const name = feature.properties.adm4_name;
-          const risk = feature.properties.fsi_risk;
-          const population = feature.properties.population;
-          barangayLayersByNameRef.current[name] = layer;
+        onEachFeature: (feat, ly) => {
+          const name = feat.properties.adm4_name;
+          const risk = feat.properties.fsi_risk;
+          const pop = feat.properties.population;
+          const prob = feat.properties.fsi_probability;
+          barangayLayersByNameRef.current[name] = ly;
 
-          const populationLine =
-            population != null
-              ? `Population: ${population.toLocaleString()}`
+          const popLine =
+            pop != null
+              ? `Population: ${pop.toLocaleString()}`
               : "Population: N/A";
+          const probLine =
+            typeof prob === "number"
+              ? `<br>Probability: ${(prob * 100).toFixed(1)}%`
+              : "";
 
-          layer.bindTooltip(
-            `${name}<br><strong>FSI: ${risk}</strong><br>${populationLine}`,
+          ly.bindTooltip(
+            `${name}<br><strong>FSI: ${risk}</strong>${probLine}<br>${popLine}`,
             {
               permanent: false,
               direction: "center",
@@ -1986,17 +2174,17 @@ function ZamboangaMask({
 
           let clickOpened = false;
 
-          layer.on("mouseover", function () {
-            const showFsi = fsiVisibleRef.current;
+          ly.on("mouseover", function () {
+            const show = fsiVisibleRef.current;
             if (mapModeRef.current === "barangay") {
-              if (prevSelectedLayerRef.current !== this && showFsi) {
+              if (prevSelectedRef.current !== this && show) {
                 this.setStyle({ fillOpacity: FSI_OPACITY.hover, weight: 2 });
               } else {
                 this.setStyle({ weight: 2 });
               }
               return;
             }
-            if (showFsi) {
+            if (show) {
               this.setStyle({ fillOpacity: FSI_OPACITY.hover, weight: 2 });
             } else {
               this.setStyle({ weight: 2, fillOpacity: 0, opacity: 0 });
@@ -2004,15 +2192,15 @@ function ZamboangaMask({
             if (!clickOpened) this.openTooltip();
           });
 
-          layer.on("mouseout", function () {
-            if (prevSelectedLayerRef.current === this) return;
-            const showFsi = fsiVisibleRef.current;
-            const risk = this.feature?.properties?.fsi_risk || "Low Risk";
+          ly.on("mouseout", function () {
+            if (prevSelectedRef.current === this) return;
+            const show = fsiVisibleRef.current;
+            const r = this.feature?.properties?.fsi_risk || "Low Risk";
             this.setStyle({
-              fillColor: showFsi
-                ? RISK_LEVELS[risk] || RISK_LEVELS["Low Risk"]
+              fillColor: show
+                ? RISK_LEVELS[r] || RISK_LEVELS["Low Risk"]
                 : "transparent",
-              color: showFsi ? "#ffffff" : "transparent",
+              color: show ? "#ffffff" : "transparent",
               fillOpacity: getBaseFill(),
               weight: 1,
               opacity: getBaseBorder(),
@@ -2020,11 +2208,11 @@ function ZamboangaMask({
             if (!clickOpened) this.closeTooltip();
           });
 
-          layer.on("click", function () {
+          ly.on("click", function () {
             if (mapModeRef.current === "barangay") return;
-            const tooltip = this.getTooltip();
-            if (tooltip) {
-              if (tooltip.isOpen()) {
+            const tt = this.getTooltip();
+            if (tt) {
+              if (tt.isOpen()) {
                 this.closeTooltip();
                 clickOpened = false;
               } else {
@@ -2035,66 +2223,51 @@ function ZamboangaMask({
           });
         },
       }).addTo(map);
-      barangayLayerRef.current = barangayLayer;
-    });
-
+      barangayLayerRef.current = layer;
+    };
+    build();
     return () => {
-      if (maskLayerRef.current) map.removeLayer(maskLayerRef.current);
-      if (borderLayerRef.current) map.removeLayer(borderLayerRef.current);
-      if (barangayLayerRef.current) map.removeLayer(barangayLayerRef.current);
-      if (maritimeLayerRef.current) map.removeLayer(maritimeLayerRef.current);
+      cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [map, onBoundaryLoaded, onBarangaysLoaded]);
+  }, [map, fsiModel]);
 
-  // Live-update FSI styles when toggled
   useEffect(() => {
     const layer = barangayLayerRef.current;
     if (!layer) return;
-
-    // Loop through every single polygon and force the style update
     layer.eachLayer((l) => {
-      const feature = l.feature;
-      const risk = feature?.properties?.fsi_risk || "Low Risk";
-      const showFsi = fsiVisibleRef.current;
-
+      const risk = l.feature?.properties?.fsi_risk || "Low Risk";
+      const show = fsiVisibleRef.current;
       l.setStyle({
-        color: showFsi ? "#ffffff" : "transparent",
+        color: show ? "#ffffff" : "transparent",
         weight: 1,
         opacity: getBaseBorder(),
-        fillColor: showFsi ? RISK_LEVELS[risk] : "transparent",
+        fillColor: show ? RISK_LEVELS[risk] : "transparent",
         fillOpacity: getBaseFill(),
       });
     });
-
-    // Force Leaflet to redraw the SVG layer
-    if (layer.redraw) {
-      layer.redraw();
-    }
+    if (layer.redraw) layer.redraw();
   }, [rasterActive, fsiVisible]);
 
   useEffect(() => {
-    if (prevSelectedLayerRef.current) {
-      const showFsi = fsiVisibleRef.current;
+    if (prevSelectedRef.current) {
+      const show = fsiVisibleRef.current;
       const risk =
-        prevSelectedLayerRef.current.feature?.properties?.fsi_risk ||
-        "Low Risk";
-      prevSelectedLayerRef.current.setStyle({
-        fillColor: showFsi
+        prevSelectedRef.current.feature?.properties?.fsi_risk || "Low Risk";
+      prevSelectedRef.current.setStyle({
+        fillColor: show
           ? RISK_LEVELS[risk] || RISK_LEVELS["Low Risk"]
           : "transparent",
-        color: showFsi ? "#ffffff" : "transparent",
+        color: show ? "#ffffff" : "transparent",
         weight: 1,
         opacity: getBaseBorder(),
         fillOpacity: getBaseFill(),
       });
-      prevSelectedLayerRef.current = null;
+      prevSelectedRef.current = null;
     }
-
     if (!selectedBarangayName) return;
     const layer = barangayLayersByNameRef.current[selectedBarangayName];
     if (!layer) return;
-
     layer.setStyle({
       color: "#1a73e8",
       weight: 3,
@@ -2102,8 +2275,7 @@ function ZamboangaMask({
       fillOpacity: fsiVisible ? FSI_OPACITY.selected : 0,
     });
     if (layer.bringToFront) layer.bringToFront();
-    prevSelectedLayerRef.current = layer;
-
+    prevSelectedRef.current = layer;
     if (layer.getBounds) {
       map.fitBounds(layer.getBounds(), {
         padding: [40, 40],
@@ -2116,6 +2288,10 @@ function ZamboangaMask({
 
   return null;
 }
+
+// ==========================================
+// QGIS LAYERS (unchanged)
+// ==========================================
 
 function QGISLayerControl({
   onLayerToggle,
@@ -2131,11 +2307,6 @@ function QGISLayerControl({
     L.DomEvent.disableClickPropagation(containerRef.current);
     L.DomEvent.disableScrollPropagation(containerRef.current);
   }, []);
-
-  const handleToggleLayer = (key) => {
-    console.log(`[QGIS] Toggling layer: ${key}`);
-    onLayerToggle(key);
-  };
 
   return (
     <div
@@ -2168,29 +2339,25 @@ function QGISLayerControl({
       {isOpen && (
         <div className="px-1.5 py-1 space-y-0.5 max-h-[320px] overflow-y-auto">
           {Object.entries(QGIS_LAYER_CONFIGS).map(([key, config]) => {
-            const isActive = activeLayers.includes(key);
-            const isLoading = !!layerLoading?.[key];
-            const errorMsg = layerErrors?.[key];
+            const active = activeLayers.includes(key);
+            const loading = !!layerLoading?.[key];
+            const err = layerErrors?.[key];
             return (
               <div key={key}>
                 <div
-                  className={`
-                    flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-all
-                    hover:bg-gray-50
-                    ${isActive ? "bg-gray-50/80" : ""}
-                  `}
-                  onClick={() => handleToggleLayer(key)}
-                  title={errorMsg || config.description}
+                  className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-all hover:bg-gray-50 ${active ? "bg-gray-50/80" : ""}`}
+                  onClick={() => onLayerToggle(key)}
+                  title={err || config.description}
                 >
                   <div
                     className="w-2.5 h-2.5 rounded-full flex-shrink-0 transition-all"
                     style={{
-                      backgroundColor: errorMsg
+                      backgroundColor: err
                         ? "#e53935"
-                        : isActive
+                        : active
                           ? config.previewColor
                           : "#e0e0e0",
-                      boxShadow: isActive
+                      boxShadow: active
                         ? `0 0 0 2px ${config.previewColor}33`
                         : "none",
                     }}
@@ -2199,12 +2366,12 @@ function QGISLayerControl({
                     {config.name}
                   </span>
                   <span className="text-[9px] text-gray-400">
-                    {isLoading ? "⏳" : errorMsg ? "⚠️" : isActive ? "●" : "○"}
+                    {loading ? "⏳" : err ? "⚠️" : active ? "●" : "○"}
                   </span>
                 </div>
-                {errorMsg && (
+                {err && (
                   <div className="px-2 pb-1 text-[9px] text-red-500 leading-tight">
-                    {errorMsg}
+                    {err}
                   </div>
                 )}
               </div>
@@ -2216,18 +2383,16 @@ function QGISLayerControl({
   );
 }
 
-// Per-layer legend, positioned below the FSI legend on the right side.
 function QGISLegend({ layerKey, config, stats }) {
   if (!layerKey || !config || !stats) return null;
   const { minVal, maxVal } = stats;
   if (minVal == null || maxVal == null) return null;
   const stops = buildLegendStops(config.colorScale, minVal, maxVal);
-
   return (
     <div
       className="absolute z-[1000]"
       style={{
-        top: "220px",
+        top: "260px",
         right: "16px",
         backgroundColor: "rgba(255,255,255,0.92)",
         padding: "10px 12px",
@@ -2242,7 +2407,7 @@ function QGISLegend({ layerKey, config, stats }) {
       <div style={{ fontWeight: "bold", marginBottom: "6px" }}>
         {config.name}
       </div>
-      {stops.map((stop, i) => (
+      {stops.map((s, i) => (
         <div
           key={i}
           style={{
@@ -2257,13 +2422,13 @@ function QGISLegend({ layerKey, config, stats }) {
               height: "14px",
               borderRadius: "2px",
               marginRight: "8px",
-              backgroundColor: stop.color,
+              backgroundColor: s.color,
               border: "1px solid rgba(0,0,0,0.15)",
               flexShrink: 0,
             }}
           />
           <span>
-            {formatRasterValue(stop.v0)} – {formatRasterValue(stop.v1)}
+            {formatRasterValue(s.v0)} – {formatRasterValue(s.v1)}
             {config.unit || ""}
           </span>
         </div>
@@ -2282,26 +2447,26 @@ function QGISRasterLayer({
 }) {
   const map = useMap();
   const layerRef = useRef(null);
-  const loadAttemptedRef = useRef(false);
-  const isMountedRef = useRef(true);
-  const cityBoundaryRef = useRef(cityBoundary);
+  const attemptedRef = useRef(false);
+  const mountedRef = useRef(true);
+  const boundaryRef = useRef(cityBoundary);
 
   useEffect(() => {
-    cityBoundaryRef.current = cityBoundary;
+    boundaryRef.current = cityBoundary;
   }, [cityBoundary]);
 
   useEffect(() => {
     if (!map.getPane("qgis-pane")) {
-      const pane = map.createPane("qgis-pane");
-      pane.style.zIndex = 600;
-      pane.style.pointerEvents = "none";
+      const p = map.createPane("qgis-pane");
+      p.style.zIndex = 600;
+      p.style.pointerEvents = "none";
     }
   }, [map]);
 
   useEffect(() => {
-    isMountedRef.current = true;
+    mountedRef.current = true;
     return () => {
-      isMountedRef.current = false;
+      mountedRef.current = false;
     };
   }, []);
 
@@ -2309,67 +2474,40 @@ function QGISRasterLayer({
     let cancelled = false;
     const controller = new AbortController();
 
-    const loadRasterLayer = async () => {
-      if (!isActive || !isMountedRef.current) {
+    const load = async () => {
+      if (!isActive || !mountedRef.current) {
         if (layerRef.current) {
           map.removeLayer(layerRef.current);
           layerRef.current = null;
         }
         onLoadError?.(layerKey, null);
         onRasterLoaded?.(layerKey, null);
-        loadAttemptedRef.current = false;
+        attemptedRef.current = false;
         onLoadingChange?.(layerKey, false);
         return;
       }
-
-      if (loadAttemptedRef.current && layerRef.current) {
-        return;
-      }
+      if (attemptedRef.current && layerRef.current) return;
 
       const config = QGIS_LAYER_CONFIGS[layerKey];
-
-      console.log(`[QGIS] Starting load for layer: ${layerKey}`);
-      console.log(`[QGIS] Target URL: ${config.path}`);
-
       try {
         onLoadingChange?.(layerKey, true);
         onLoadError?.(layerKey, null);
-        loadAttemptedRef.current = true;
+        attemptedRef.current = true;
 
-        const response = await fetch(config.path, {
-          signal: controller.signal,
-        });
-
-        console.log(
-          `[QGIS] Response status for ${layerKey}: ${response.status} ${response.statusText}`,
-        );
-
-        if (!response.ok) {
-          throw new Error(
-            `HTTP ${response.status}: ${response.statusText}. Check Azure SAS token or CORS settings.`,
-          );
+        const res = await fetch(config.path, { signal: controller.signal });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
         }
-
-        const arrayBuffer = await response.arrayBuffer();
+        const buf = await res.arrayBuffer();
         if (cancelled) return;
 
-        console.log(
-          `[QGIS] Data received for ${layerKey}. Size: ${arrayBuffer.byteLength} bytes`,
-        );
-
-        const tiff = await geotiff.fromArrayBuffer(arrayBuffer);
+        const tiff = await geotiff.fromArrayBuffer(buf);
         const image = await tiff.getImage();
         const bbox = image.getBoundingBox();
-        console.log(`[QGIS] Raw bbox for ${layerKey}:`, bbox);
-        console.log(`[QGIS] GeoKeys:`, image.getGeoKeys?.());
         const width = image.getWidth();
         const height = image.getHeight();
         const data = await image.readRasters();
         if (cancelled) return;
-
-        console.log(
-          `[QGIS] TIFF parsed for ${layerKey}. Dimensions: ${width}x${height}`,
-        );
 
         let noDataValue = null;
         try {
@@ -2377,17 +2515,13 @@ function QGISRasterLayer({
           if (nd !== null && nd !== undefined && !Number.isNaN(Number(nd))) {
             noDataValue = Number(nd);
           }
-        } catch {
-          noDataValue = null;
-        }
-
-        if (cancelled || !isMountedRef.current) return;
+        } catch {}
 
         const canvas = document.createElement("canvas");
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext("2d");
-        const imageData = ctx.createImageData(width, height);
+        const img = ctx.createImageData(width, height);
 
         const values = data[0];
         let minVal = Infinity;
@@ -2402,71 +2536,58 @@ function QGISRasterLayer({
         for (let i = 0; i < values.length; i++) {
           const idx = i * 4;
           if (noDataValue != null && values[i] === noDataValue) {
-            imageData.data[idx] = 0;
-            imageData.data[idx + 1] = 0;
-            imageData.data[idx + 2] = 0;
-            imageData.data[idx + 3] = 0;
+            img.data[idx + 3] = 0;
             continue;
           }
-          const normalized = range > 0 ? (values[i] - minVal) / range : 0;
-          const [r, g, b] = getColorRamp(normalized, config.colorScale);
-          imageData.data[idx] = r;
-          imageData.data[idx + 1] = g;
-          imageData.data[idx + 2] = b;
-          imageData.data[idx + 3] = 255;
+          const n = range > 0 ? (values[i] - minVal) / range : 0;
+          const [r, g, b] = getColorRamp(n, config.colorScale);
+          img.data[idx] = r;
+          img.data[idx + 1] = g;
+          img.data[idx + 2] = b;
+          img.data[idx + 3] = 255;
         }
+        ctx.putImageData(img, 0, 0);
 
-        ctx.putImageData(imageData, 0, 0);
-
-        let outputCanvas = canvas;
-        const clipRings = getClipRingsFromBoundary(
-          cityBoundaryRef.current,
+        let outCanvas = canvas;
+        const rings = getClipRingsFromBoundary(
+          boundaryRef.current,
           bbox,
           width,
           height,
         );
-        if (clipRings.length > 0) {
-          const clippedCanvas = document.createElement("canvas");
-          clippedCanvas.width = width;
-          clippedCanvas.height = height;
-          const clipCtx = clippedCanvas.getContext("2d");
-          clipCtx.save();
-          clipCtx.beginPath();
-          clipRings.forEach((ring) => {
+        if (rings.length > 0) {
+          const cc = document.createElement("canvas");
+          cc.width = width;
+          cc.height = height;
+          const cctx = cc.getContext("2d");
+          cctx.save();
+          cctx.beginPath();
+          rings.forEach((ring) => {
             ring.forEach(([x, y], i) => {
-              if (i === 0) clipCtx.moveTo(x, y);
-              else clipCtx.lineTo(x, y);
+              if (i === 0) cctx.moveTo(x, y);
+              else cctx.lineTo(x, y);
             });
-            clipCtx.closePath();
+            cctx.closePath();
           });
-          clipCtx.clip("evenodd");
-          clipCtx.drawImage(canvas, 0, 0);
-          clipCtx.restore();
-          outputCanvas = clippedCanvas;
+          cctx.clip("evenodd");
+          cctx.drawImage(canvas, 0, 0);
+          cctx.restore();
+          outCanvas = cc;
         }
 
-        const dataUrl = outputCanvas.toDataURL("image/png");
+        const dataUrl = outCanvas.toDataURL("image/png");
+        const [west, south, east, north] = bbox;
+        const bl = utmToLatLng(west, south);
+        const tr = utmToLatLng(east, north);
 
-        const west = bbox[0];
-        const south = bbox[1];
-        const east = bbox[2];
-        const north = bbox[3];
-
-        const bottomLeft = utmToLatLng(west, south);
-        const topRight = utmToLatLng(east, north);
-
-        if (cancelled || !isMountedRef.current) return;
-
-        if (layerRef.current) {
-          map.removeLayer(layerRef.current);
-          layerRef.current = null;
-        }
+        if (cancelled || !mountedRef.current) return;
+        if (layerRef.current) map.removeLayer(layerRef.current);
 
         const overlay = L.imageOverlay(
           dataUrl,
           [
-            [bottomLeft.lat, bottomLeft.lng],
-            [topRight.lat, topRight.lng],
+            [bl.lat, bl.lng],
+            [tr.lat, tr.lng],
           ],
           {
             opacity: config.opacity || 0.8,
@@ -2474,11 +2595,8 @@ function QGISRasterLayer({
             pane: "qgis-pane",
           },
         );
-
         overlay.addTo(map);
         layerRef.current = overlay;
-
-        console.log(`[QGIS] Successfully added layer ${layerKey} to map.`);
 
         onRasterLoaded?.(layerKey, {
           values,
@@ -2492,34 +2610,25 @@ function QGISRasterLayer({
 
         map.fitBounds(
           [
-            [bottomLeft.lat, bottomLeft.lng],
-            [topRight.lat, topRight.lng],
+            [bl.lat, bl.lng],
+            [tr.lat, tr.lng],
           ],
           { padding: [50, 50] },
         );
-      } catch (error) {
-        if (error.name === "AbortError" || cancelled) {
-          console.log(`[QGIS] Cancelled load for ${layerKey}`);
-          return;
-        }
-
-        console.error(`[QGIS] Failed to load ${layerKey}:`, error);
-        console.error(`[QGIS] Failed URL: ${config.path}`);
-
-        if (isMountedRef.current) {
-          onLoadError?.(layerKey, error.message || "Failed to load layer");
+      } catch (err) {
+        if (err.name === "AbortError" || cancelled) return;
+        console.error(`[QGIS] Failed ${layerKey}:`, err);
+        if (mountedRef.current) {
+          onLoadError?.(layerKey, err.message || "Failed to load layer");
           onRasterLoaded?.(layerKey, null);
-          loadAttemptedRef.current = false;
+          attemptedRef.current = false;
         }
       } finally {
-        if (isMountedRef.current) {
-          onLoadingChange?.(layerKey, false);
-        }
+        if (mountedRef.current) onLoadingChange?.(layerKey, false);
       }
     };
 
-    loadRasterLayer();
-
+    load();
     return () => {
       cancelled = true;
       controller.abort();
@@ -2529,7 +2638,7 @@ function QGISRasterLayer({
       }
       onRasterLoaded?.(layerKey, null);
       onLoadingChange?.(layerKey, false);
-      loadAttemptedRef.current = false;
+      attemptedRef.current = false;
     };
   }, [map, layerKey, isActive, onLoadingChange, onLoadError, onRasterLoaded]);
 
@@ -2541,81 +2650,59 @@ function QGISHoverTooltip({ rasterDataRef }) {
 
   useEffect(() => {
     const container = map.getContainer();
-
     const tooltipEl = document.createElement("div");
-    tooltipEl.className = "qgis-hover-tooltip";
     tooltipEl.style.cssText = `
-      position: absolute;
-      z-index: 1000;
-      pointer-events: none;
-      background: rgba(0,0,0,0.78);
-      color: #fff;
-      font-size: 11px;
-      font-family: Arial, sans-serif;
-      padding: 6px 9px;
-      border-radius: 4px;
-      line-height: 1.5;
-      display: none;
-      white-space: nowrap;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.3);
-    `;
+      position: absolute; z-index: 1000; pointer-events: none;
+      background: rgba(0,0,0,0.78); color: #fff; font-size: 11px;
+      font-family: Arial, sans-serif; padding: 6px 9px; border-radius: 4px;
+      line-height: 1.5; display: none; white-space: nowrap;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.3);`;
     container.appendChild(tooltipEl);
 
-    const formatValue = (value) => {
-      const abs = Math.abs(value);
-      if (abs >= 1000) return value.toFixed(0);
-      if (abs >= 10) return value.toFixed(1);
-      return value.toFixed(2);
+    const fmt = (v) => {
+      const a = Math.abs(v);
+      if (a >= 1000) return v.toFixed(0);
+      if (a >= 10) return v.toFixed(1);
+      return v.toFixed(2);
     };
 
-    const handleMouseMove = (e) => {
-      const activeKeys = Object.keys(rasterDataRef.current || {});
-      if (activeKeys.length === 0) {
+    const onMove = (e) => {
+      const keys = Object.keys(rasterDataRef.current || {});
+      if (keys.length === 0) {
         tooltipEl.style.display = "none";
         return;
       }
-
       const lines = [];
-      for (const key of activeKeys) {
+      for (const key of keys) {
         const info = rasterDataRef.current[key];
         if (!info) continue;
-        const value = getRasterValueAtLatLng(e.latlng, info);
-        if (value == null) continue;
-        const config = QGIS_LAYER_CONFIGS[key];
-        const label = config?.name || key;
-        const unit = config?.unit || "";
-        lines.push(`<strong>${label}:</strong> ${formatValue(value)}${unit}`);
+        const v = getRasterValueAtLatLng(e.latlng, info);
+        if (v == null) continue;
+        const cfg = QGIS_LAYER_CONFIGS[key];
+        lines.push(
+          `<strong>${cfg?.name || key}:</strong> ${fmt(v)}${cfg?.unit || ""}`,
+        );
       }
-
       if (lines.length === 0) {
         tooltipEl.style.display = "none";
         return;
       }
-
       tooltipEl.innerHTML = lines.join("<br>");
       tooltipEl.style.display = "block";
-
-      const point = map.latLngToContainerPoint(e.latlng);
-      const containerWidth = container.clientWidth;
-      const tooltipWidth = tooltipEl.offsetWidth;
-      const left =
-        point.x + 16 + tooltipWidth > containerWidth
-          ? point.x - tooltipWidth - 16
-          : point.x + 16;
-      tooltipEl.style.left = `${left}px`;
-      tooltipEl.style.top = `${point.y + 16}px`;
+      const p = map.latLngToContainerPoint(e.latlng);
+      const cw = container.clientWidth;
+      const tw = tooltipEl.offsetWidth;
+      tooltipEl.style.left = `${p.x + 16 + tw > cw ? p.x - tw - 16 : p.x + 16}px`;
+      tooltipEl.style.top = `${p.y + 16}px`;
     };
-
-    const handleMouseLeave = () => {
+    const onLeave = () => {
       tooltipEl.style.display = "none";
     };
-
-    map.on("mousemove", handleMouseMove);
-    container.addEventListener("mouseleave", handleMouseLeave);
-
+    map.on("mousemove", onMove);
+    container.addEventListener("mouseleave", onLeave);
     return () => {
-      map.off("mousemove", handleMouseMove);
-      container.removeEventListener("mouseleave", handleMouseLeave);
+      map.off("mousemove", onMove);
+      container.removeEventListener("mouseleave", onLeave);
       if (tooltipEl.parentNode) tooltipEl.parentNode.removeChild(tooltipEl);
     };
   }, [map, rasterDataRef]);
@@ -2665,9 +2752,10 @@ function getColorRamp(value, scale) {
       return hsvToRgb(value * 0.8, 1, 1);
     case "rainbow":
       return hsvToRgb(value, 1, 1);
-    default:
-      const gray = Math.round(value * 255);
-      return [gray, gray, gray];
+    default: {
+      const g = Math.round(value * 255);
+      return [g, g, g];
+    }
   }
 }
 
@@ -2722,10 +2810,10 @@ function QGISLayers({
 }) {
   return (
     <>
-      {activeLayers.map((key) => (
+      {activeLayers.map((k) => (
         <QGISRasterLayer
-          key={key}
-          layerKey={key}
+          key={k}
+          layerKey={k}
           isActive={true}
           cityBoundary={cityBoundary}
           onLoadingChange={onLoadingChange}
@@ -2737,9 +2825,79 @@ function QGISLayers({
   );
 }
 
-function BarangayCard({ barangay, onClear }) {
+// ==========================================
+// SIDE-PANEL COMPONENTS
+// ==========================================
+
+function FactorsList({ factors, loading, error, modelLabel }) {
+  if (loading) {
+    return (
+      <div className="text-xs text-muted-foreground italic">
+        Computing top factors
+        {modelLabel ? ` (${modelLabel.toUpperCase()})` : ""}…
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="text-xs text-red-500">
+        Factor breakdown unavailable: {error}
+      </div>
+    );
+  }
+  if (!factors || factors.length === 0) return null;
+
+  const maxAbs = Math.max(
+    ...factors.map((f) => Math.abs(f.contribution)),
+    1e-9,
+  );
+
+  return (
+    <div className="space-y-1.5">
+      <div className="text-xs uppercase tracking-wide text-muted-foreground">
+        Top contributing factors
+        {modelLabel ? (
+          <span className="ml-1.5 text-[10px] font-mono bg-muted px-1.5 py-0.5 rounded">
+            {modelLabel.toUpperCase()}
+          </span>
+        ) : null}
+      </div>
+      {factors.map((f, i) => {
+        const pct = (Math.abs(f.contribution) / maxAbs) * 100;
+        const positive = f.contribution > 0;
+        const barColor = positive ? "#d73027" : "#4575b4";
+        return (
+          <div key={i} className="text-xs">
+            <div className="flex justify-between mb-0.5">
+              <span className="font-medium truncate">{f.feature}</span>
+              <span
+                className="ml-2 tabular-nums"
+                style={{ color: barColor, fontWeight: 600 }}
+              >
+                {positive ? "+" : ""}
+                {(f.contribution * 100).toFixed(1)}%
+              </span>
+            </div>
+            <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+              <div
+                className="h-full transition-all"
+                style={{ width: `${pct}%`, backgroundColor: barColor }}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function BarangayCard({ barangay, onClear, fsiModel }) {
+  const { factors, loading, error } = useBarangayExplanation(
+    barangay,
+    fsiModel,
+  );
   if (!barangay) return null;
-  const { name, risk, population } = barangay;
+  const { name, risk, population, probability } = barangay;
   const color = FSI_COLORS[risk] || "#9e9e9e";
   const message =
     FSI_MESSAGES[risk] ||
@@ -2770,6 +2928,14 @@ function BarangayCard({ barangay, onClear }) {
             {risk}
           </span>
         </div>
+        {typeof probability === "number" && (
+          <div className="flex justify-between border-b pb-2">
+            <span className="text-muted-foreground">Probability</span>
+            <span className="font-medium tabular-nums">
+              {(probability * 100).toFixed(1)}%
+            </span>
+          </div>
+        )}
         <div className="flex justify-between border-b pb-2">
           <span className="text-muted-foreground">Population</span>
           <span className="font-medium">
@@ -2779,6 +2945,16 @@ function BarangayCard({ barangay, onClear }) {
         <p className="text-xs text-muted-foreground leading-relaxed">
           {message}
         </p>
+        {USE_SERVER && (
+          <div className="border-t pt-3">
+            <FactorsList
+              factors={factors}
+              loading={loading}
+              error={error}
+              modelLabel={fsiModel}
+            />
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -2796,6 +2972,7 @@ function FacilityDetailsPanel({
   onClearBarangay,
   facilitiesVisible,
   onToggleFacilitiesVisibility,
+  fsiModel,
 }) {
   const { mode, results, errorMsg, origin, originBarangay } = selection;
 
@@ -2807,6 +2984,7 @@ function FacilityDetailsPanel({
             <BarangayCard
               barangay={selectedBarangay}
               onClear={onClearBarangay}
+              fsiModel={fsiModel}
             />
           ) : (
             <Card className="border-dashed bg-muted/50">
@@ -2904,7 +3082,9 @@ function FacilityDetailsPanel({
               </CardContent>
             </Card>
           )}
+
           {mode === "loading" && <SkeletonFacilityDetails />}
+
           {mode === "error" && (
             <Card className="border-destructive/50 bg-destructive/5">
               <CardContent className="p-4 text-sm text-destructive">
@@ -2912,6 +3092,7 @@ function FacilityDetailsPanel({
               </CardContent>
             </Card>
           )}
+
           {mode === "done" && results.length > 0 && (
             <div className="space-y-4">
               <FsiNotice originBarangay={originBarangay} />
@@ -3047,7 +3228,6 @@ function FsiNotice({ originBarangay }) {
 function FacilityCard({ item, rank }) {
   const { facility, distanceMeters, durationSeconds } = item;
   const color = ROUTE_COLORS[rank - 1] || "#9e9e9e";
-
   const evac = facility._evac;
   const isEvac = Boolean(evac) || facility.type === EVACUATION_CENTER_TYPE;
 
@@ -3084,7 +3264,6 @@ function FacilityCard({ item, rank }) {
             {Math.round(durationSeconds / 60)} min
           </span>
         </div>
-
         {isEvac ? (
           <>
             {evac?.location && (
@@ -3158,6 +3337,10 @@ function FacilityCard({ item, rank }) {
   );
 }
 
+// ==========================================
+// MAIN COMPONENT
+// ==========================================
+
 function FloodMap() {
   const position = [7.0736, 122.01];
   const [facilities, setFacilities] = useState([]);
@@ -3171,6 +3354,14 @@ function FloodMap() {
   const [qgisLayerLoading, setQgisLayerLoading] = useState({});
   const [qgisLayerStats, setQgisLayerStats] = useState({});
   const [fsiVisible, setFsiVisible] = useState(true);
+
+  // Model used for FSI coloring. Swappable via the legend.
+  const [fsiModel, setFsiModel] = useState(DEFAULT_FSI_MODEL);
+  const availableModels = useMemo(
+    () => Array.from(new Set([MGWR_MODEL, STACKING_MODEL])).filter(Boolean),
+    [],
+  );
+
   const [selection, setSelection] = useState({
     mode: "idle",
     results: [],
@@ -3181,11 +3372,8 @@ function FloodMap() {
     errorType: null,
   });
   const [facilityTypes, setFacilityTypes] = useState([]);
-
   const [selectedTypes, setSelectedTypes] = useState([]);
-
   const [facilitiesVisible, setFacilitiesVisible] = useState(true);
-
   const [mapMode, setMapMode] = useState("marker");
   const [selectedBarangay, setSelectedBarangay] = useState(null);
 
@@ -3211,50 +3399,30 @@ function FloodMap() {
       });
   }, []);
 
-  const handleBoundaryLoaded = useCallback((feature) => {
-    setCityBoundary(feature);
-  }, []);
-
-  const handleBarangaysLoaded = useCallback((data) => {
-    setBarangayData(data);
-  }, []);
-
-  const handleSelectionChange = useCallback((data) => {
-    setSelection(data);
-  }, []);
-
+  const handleBoundaryLoaded = useCallback((f) => setCityBoundary(f), []);
+  const handleBarangaysLoaded = useCallback((d) => setBarangayData(d), []);
+  const handleSelectionChange = useCallback((d) => setSelection(d), []);
   const handleRequestSearchSelect = useCallback((fn) => {
     searchSelectRef.current = fn;
   }, []);
-
   const handleRequestLocation = useCallback((fn) => {
     locationHandlerRef.current = fn;
   }, []);
-
   const handleRequestReset = useCallback((fn) => {
     resetHandlerRef.current = fn;
   }, []);
 
   const handleNearestFacilitiesFound = useCallback(
-    (nearestFacilities) => {
-      const nearestIds = new Set(
-        nearestFacilities.map((f) => `${f.lat},${f.lon}`),
+    (nearest) => {
+      const ids = new Set(nearest.map((f) => `${f.lat},${f.lon}`));
+      setHiddenFacilities(
+        facilities.filter((f) => !ids.has(`${f.lat},${f.lon}`)),
       );
-      const toHide = facilities.filter(
-        (f) => !nearestIds.has(`${f.lat},${f.lon}`),
-      );
-      setHiddenFacilities(toHide);
     },
     [facilities],
   );
-
-  const handleClearHighlight = useCallback(() => {
-    setHiddenFacilities([]);
-  }, []);
-
-  const handleLocationChange = useCallback((location) => {
-    setHasLocation(!!location);
-  }, []);
+  const handleClearHighlight = useCallback(() => setHiddenFacilities([]), []);
+  const handleLocationChange = useCallback((loc) => setHasLocation(!!loc), []);
 
   const handleLocate = useCallback(() => {
     if (navigator.geolocation) {
@@ -3265,53 +3433,43 @@ function FloodMap() {
             lng: pos.coords.longitude,
           });
         },
-        (err) => {
-          console.warn("Geolocation error:", err.message);
-        },
+        (err) => console.warn("Geolocation error:", err.message),
         { timeout: 10000, maximumAge: 60000 },
       );
     }
   }, []);
 
-  const handleClear = useCallback(() => {
-    clearLocationRef.current?.();
+  const handleClear = useCallback(() => clearLocationRef.current?.(), []);
+  const handleCenter = useCallback(() => centerLocationRef.current?.(), []);
+
+  const handleLayerToggle = useCallback((key) => {
+    setActiveQGISLayers((prev) => (prev.includes(key) ? [] : [key]));
   }, []);
 
-  const handleCenter = useCallback(() => {
-    centerLocationRef.current?.();
+  const handleQGISLoadingChange = useCallback((key, loading) => {
+    setQgisLayerLoading((p) => ({ ...p, [key]: loading }));
   }, []);
-
-  // Only one QGIS raster layer active at a time.
-  const handleLayerToggle = useCallback((layerKey) => {
-    setActiveQGISLayers((prev) => (prev.includes(layerKey) ? [] : [layerKey]));
-  }, []);
-
-  const handleQGISLoadingChange = useCallback((layerKey, isLoading) => {
-    setQgisLayerLoading((prev) => ({ ...prev, [layerKey]: isLoading }));
-  }, []);
-
-  const handleQGISLoadError = useCallback((layerKey, message) => {
-    setQgisLayerErrors((prev) => {
-      const next = { ...prev };
-      if (message) next[layerKey] = message;
-      else delete next[layerKey];
-      return next;
+  const handleQGISLoadError = useCallback((key, msg) => {
+    setQgisLayerErrors((p) => {
+      const n = { ...p };
+      if (msg) n[key] = msg;
+      else delete n[key];
+      return n;
     });
   }, []);
-
-  const handleRasterLoaded = useCallback((layerKey, data) => {
+  const handleRasterLoaded = useCallback((key, data) => {
     if (data) {
-      qgisRasterDataRef.current[layerKey] = data;
-      setQgisLayerStats((prev) => ({
-        ...prev,
-        [layerKey]: { minVal: data.minVal, maxVal: data.maxVal },
+      qgisRasterDataRef.current[key] = data;
+      setQgisLayerStats((p) => ({
+        ...p,
+        [key]: { minVal: data.minVal, maxVal: data.maxVal },
       }));
     } else {
-      delete qgisRasterDataRef.current[layerKey];
-      setQgisLayerStats((prev) => {
-        const next = { ...prev };
-        delete next[layerKey];
-        return next;
+      delete qgisRasterDataRef.current[key];
+      setQgisLayerStats((p) => {
+        const n = { ...p };
+        delete n[key];
+        return n;
       });
     }
   }, []);
@@ -3319,23 +3477,18 @@ function FloodMap() {
   const handleRequestClear = useCallback((fn) => {
     clearLocationRef.current = fn;
   }, []);
-
   const handleRequestCenter = useCallback((fn) => {
     centerLocationRef.current = fn;
   }, []);
-
   const handleSearchSelect = useCallback((latlng) => {
     searchSelectRef.current?.(latlng);
   }, []);
 
-  const handleUseMyLocationClick = () => {
-    locationHandlerRef.current?.();
-  };
-
+  const handleUseMyLocationClick = () => locationHandlerRef.current?.();
   const handleAlertClose = () => {
     resetHandlerRef.current?.();
-    setSelection((prev) => ({
-      ...prev,
+    setSelection((p) => ({
+      ...p,
       outsideBoundary: false,
       mode: "idle",
       errorType: null,
@@ -3344,54 +3497,41 @@ function FloodMap() {
 
   const handleModeChange = useCallback((newMode) => {
     setMapMode(newMode);
-    if (newMode === "marker") {
-      setSelectedBarangay(null);
-    }
+    if (newMode === "marker") setSelectedBarangay(null);
   }, []);
-
-  const handleBarangaySelect = useCallback((barangay) => {
-    setSelectedBarangay(barangay);
-  }, []);
-
-  const handleClearBarangay = useCallback(() => {
-    setSelectedBarangay(null);
-  }, []);
-
-  const handleSelectAllTypes = useCallback(() => {
-    setSelectedTypes([]);
-  }, []);
-
+  const handleBarangaySelect = useCallback((b) => setSelectedBarangay(b), []);
+  const handleClearBarangay = useCallback(() => setSelectedBarangay(null), []);
+  const handleSelectAllTypes = useCallback(() => setSelectedTypes([]), []);
   const handleToggleType = useCallback((type) => {
     setSelectedTypes((prev) =>
       prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type],
     );
   }, []);
-
   const handleToggleFacilitiesVisibility = useCallback(() => {
     setFacilitiesVisible((v) => !v);
   }, []);
+  const handleToggleFsi = useCallback(() => setFsiVisible((v) => !v), []);
 
-  const handleToggleFsi = useCallback(() => {
-    setFsiVisible((v) => !v);
+  // Changing the FSI model must also refresh the currently selected barangay
+  const handleModelChange = useCallback((newModel) => {
+    setFsiModel(newModel);
+    setSelectedBarangay(null);
   }, []);
 
   const effectiveHiddenFacilities = useMemo(() => {
-    const hiddenIds = new Set();
-
+    const hidden = new Set();
     if (selectedTypes.length > 0) {
       const healthTypes = selectedTypes.filter(
         (t) => t !== EVACUATION_CENTER_TYPE,
       );
       facilities.forEach((f) => {
         if (healthTypes.length === 0 || !healthTypes.includes(f.type)) {
-          hiddenIds.add(`${f.lat},${f.lon}`);
+          hidden.add(`${f.lat},${f.lon}`);
         }
       });
     }
-
-    hiddenFacilities.forEach((f) => hiddenIds.add(`${f.lat},${f.lon}`));
-
-    return facilities.filter((f) => hiddenIds.has(`${f.lat},${f.lon}`));
+    hiddenFacilities.forEach((f) => hidden.add(`${f.lat},${f.lon}`));
+    return facilities.filter((f) => hidden.has(`${f.lat},${f.lon}`));
   }, [facilities, selectedTypes, hiddenFacilities]);
 
   const showEvacCenters =
@@ -3406,12 +3546,8 @@ function FloodMap() {
           <style>{`
             .barangay-label {
               background: rgba(0,0,0,0.75);
-              border: none;
-              border-radius: 4px;
-              color: #ffffff;
-              font-size: 11px;
-              font-weight: 500;
-              padding: 3px 7px;
+              border: none; border-radius: 4px; color: #ffffff;
+              font-size: 11px; font-weight: 500; padding: 3px 7px;
               white-space: nowrap;
             }
             .barangay-label::before { display: none; }
@@ -3420,31 +3556,19 @@ function FloodMap() {
             .search-item:hover { background: #f2f2f2; }
             .leaflet-tooltip { pointer-events: none !important; }
             .leaflet-control-container .leaflet-bottom .leaflet-right {
-              display: flex !important;
-              flex-direction: row !important;
-              gap: 8px !important;
-              margin-bottom: 20px !important;
+              display: flex !important; flex-direction: row !important;
+              gap: 8px !important; margin-bottom: 20px !important;
             }
             .leaflet-control-container .leaflet-bottom .leaflet-right .leaflet-control {
               margin: 0 !important;
             }
             .custom-cluster-icon { background: transparent !important; border: none !important; }
             .custom-cluster-icon div { background: transparent !important; border: none !important; }
-            .marker-cluster {
-              background: transparent !important;
-              border: none !important;
-              box-shadow: none !important;
-            }
-            .marker-cluster div {
-              background: transparent !important;
-              border: none !important;
-              box-shadow: none !important;
-            }
-            /* FIX: Force pointer events on invisible SVG paths so tooltips still work */
-            .leaflet-interactive {
-              pointer-events: auto !important;
-            }
+            .marker-cluster { background: transparent !important; border: none !important; box-shadow: none !important; }
+            .marker-cluster div { background: transparent !important; border: none !important; box-shadow: none !important; }
+            .leaflet-interactive { pointer-events: auto !important; }
           `}</style>
+
           <MapContainer
             center={position}
             zoom={10}
@@ -3454,9 +3578,10 @@ function FloodMap() {
             style={{ height: "100%", width: "100%" }}
           >
             <TileLayer
-              attribution="Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community"
+              attribution="Tiles &copy; Esri"
               url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
             />
+
             <ZamboangaMask
               onBoundaryLoaded={handleBoundaryLoaded}
               onBarangaysLoaded={handleBarangaysLoaded}
@@ -3464,7 +3589,9 @@ function FloodMap() {
               fsiVisible={fsiVisible}
               mapMode={mapMode}
               selectedBarangayName={selectedBarangay?.name || null}
+              fsiModel={fsiModel}
             />
+
             <POILayer
               onFacilities={setFacilities}
               hiddenFacilities={effectiveHiddenFacilities}
@@ -3510,9 +3637,13 @@ function FloodMap() {
               onCenterLocation={handleCenter}
               hasLocation={hasLocation}
             />
+
             <LegendControl
               fsiVisible={fsiVisible}
               onToggleFsi={handleToggleFsi}
+              fsiModel={fsiModel}
+              onModelChange={handleModelChange}
+              availableModels={availableModels}
             />
           </MapContainer>
 
@@ -3551,6 +3682,7 @@ function FloodMap() {
           onClearBarangay={handleClearBarangay}
           facilitiesVisible={facilitiesVisible}
           onToggleFacilitiesVisibility={handleToggleFacilitiesVisibility}
+          fsiModel={fsiModel}
         />
       </div>
 
