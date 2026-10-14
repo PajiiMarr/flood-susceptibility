@@ -55,20 +55,18 @@ const USE_SERVER =
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
-const MGWR_MODEL = import.meta.env.VITE_MGWR_MODEL || "mgwr";
+// Only using the Stacking model for now as requested.
 const STACKING_MODEL = import.meta.env.VITE_STACKING_MODEL || "stacking";
-const DEFAULT_FSI_MODEL = MGWR_MODEL;
+const DEFAULT_FSI_MODEL = STACKING_MODEL;
 
 console.log(
   `[FSI] server=${USE_SERVER ? "ON" : "OFF"} base=${API_BASE_URL} ` +
-    `models=[${MGWR_MODEL}, ${STACKING_MODEL}] default=${DEFAULT_FSI_MODEL}`,
+    `model=${DEFAULT_FSI_MODEL}`,
 );
 
 // ==========================================
 // FACTOR INFO MAP
 // ==========================================
-// Friendly display name + short description of what the feature measures.
-// Used to make the "Top contributing factors" panel readable.
 const FACTOR_INFO = {
   // --- Raw terrain ---
   dem: { label: "Elevation", desc: "Ground height above sea level" },
@@ -945,30 +943,16 @@ function MapResizer() {
 }
 
 // ==========================================
-// LEGEND + MODEL TOGGLE
+// LEGEND
 // ==========================================
-function LegendControl({
-  fsiVisible,
-  onToggleFsi,
-  fsiModel,
-  onModelChange,
-  availableModels,
-}) {
+function LegendControl({ fsiVisible, onToggleFsi }) {
   const map = useMap();
   const divRef = useRef(null);
   const toggleRef = useRef(onToggleFsi);
-  const modelChangeRef = useRef(onModelChange);
-  const fsiModelRef = useRef(fsiModel);
 
   useEffect(() => {
     toggleRef.current = onToggleFsi;
   }, [onToggleFsi]);
-  useEffect(() => {
-    modelChangeRef.current = onModelChange;
-  }, [onModelChange]);
-  useEffect(() => {
-    fsiModelRef.current = fsiModel;
-  }, [fsiModel]);
 
   useEffect(() => {
     const legend = L.control({ position: "topright" });
@@ -1027,35 +1011,6 @@ function LegendControl({
     header.appendChild(toggleBtn);
     div.appendChild(header);
 
-    if (availableModels.length > 1) {
-      const modelRow = document.createElement("div");
-      modelRow.style.cssText =
-        "display:flex; gap:4px; margin-bottom:6px; padding-bottom:6px; border-bottom: 1px solid rgba(0,0,0,0.08);";
-
-      availableModels.forEach((m) => {
-        const btn = document.createElement("button");
-        const active = m === fsiModelRef.current;
-        btn.type = "button";
-        btn.textContent = m.toUpperCase();
-        btn.style.cssText = `
-          flex: 1;
-          border: 1px solid ${active ? "#1a73e8" : "#d0d0d0"};
-          background: ${active ? "#1a73e8" : "#fff"};
-          color: ${active ? "#fff" : "#444"};
-          font-size: 10px; font-weight: 600;
-          padding: 3px 6px; border-radius: 4px;
-          cursor: pointer; transition: all 0.15s ease;
-        `;
-        btn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          if (!active) modelChangeRef.current?.(m);
-        });
-        modelRow.appendChild(btn);
-      });
-
-      div.appendChild(modelRow);
-    }
-
     for (const [level, color] of Object.entries(RISK_LEVELS)) {
       const row = document.createElement("div");
       row.style.cssText =
@@ -1073,7 +1028,7 @@ function LegendControl({
       row.appendChild(label);
       div.appendChild(row);
     }
-  }, [fsiVisible, fsiModel, availableModels]);
+  }, [fsiVisible]);
 
   return null;
 }
@@ -3029,12 +2984,11 @@ function QGISLayers({
 // SIDE-PANEL COMPONENTS
 // ==========================================
 
-function FactorsList({ factors, loading, error, modelLabel }) {
+function FactorsList({ factors, loading, error }) {
   if (loading) {
     return (
       <div className="text-xs text-muted-foreground italic">
-        Computing top factors
-        {modelLabel ? ` (${modelLabel.toUpperCase()})` : ""}…
+        Computing top factors…
       </div>
     );
   }
@@ -3058,11 +3012,6 @@ function FactorsList({ factors, loading, error, modelLabel }) {
         <div className="text-xs uppercase tracking-wide text-muted-foreground">
           Top Contributing Factors
         </div>
-        {modelLabel ? (
-          <span className="text-[10px] font-mono bg-muted px-1.5 py-0.5 rounded">
-            {modelLabel.toUpperCase()}
-          </span>
-        ) : null}
       </div>
 
       {/* Legend / value meaning */}
@@ -3120,10 +3069,10 @@ function FactorsList({ factors, loading, error, modelLabel }) {
   );
 }
 
-function BarangayCard({ barangay, onClear, fsiModel }) {
+function BarangayCard({ barangay, onClear }) {
   const { factors, loading, error } = useBarangayExplanation(
     barangay,
-    fsiModel,
+    DEFAULT_FSI_MODEL,
   );
   if (!barangay) return null;
   const { name, risk, population, probability } = barangay;
@@ -3176,12 +3125,7 @@ function BarangayCard({ barangay, onClear, fsiModel }) {
         </p>
         {USE_SERVER && (
           <div className="border-t pt-3">
-            <FactorsList
-              factors={factors}
-              loading={loading}
-              error={error}
-              modelLabel={fsiModel}
-            />
+            <FactorsList factors={factors} loading={loading} error={error} />
           </div>
         )}
       </CardContent>
@@ -3201,7 +3145,6 @@ function FacilityDetailsPanel({
   onClearBarangay,
   facilitiesVisible,
   onToggleFacilitiesVisibility,
-  fsiModel,
 }) {
   const { mode, results, errorMsg, origin, originBarangay } = selection;
 
@@ -3213,7 +3156,6 @@ function FacilityDetailsPanel({
             <BarangayCard
               barangay={selectedBarangay}
               onClear={onClearBarangay}
-              fsiModel={fsiModel}
             />
           ) : (
             <Card className="border-dashed bg-muted/50">
@@ -3584,12 +3526,6 @@ function FloodMap() {
   const [qgisLayerStats, setQgisLayerStats] = useState({});
   const [fsiVisible, setFsiVisible] = useState(true);
 
-  const [fsiModel, setFsiModel] = useState(DEFAULT_FSI_MODEL);
-  const availableModels = useMemo(
-    () => Array.from(new Set([MGWR_MODEL, STACKING_MODEL])).filter(Boolean),
-    [],
-  );
-
   const [selection, setSelection] = useState({
     mode: "idle",
     results: [],
@@ -3770,11 +3706,6 @@ function FloodMap() {
   }, []);
   const handleToggleFsi = useCallback(() => setFsiVisible((v) => !v), []);
 
-  const handleModelChange = useCallback((newModel) => {
-    setFsiModel(newModel);
-    setSelectedBarangay(null);
-  }, []);
-
   const effectiveHiddenFacilities = useMemo(() => {
     const hidden = new Set();
     if (selectedTypes.length > 0) {
@@ -3809,7 +3740,6 @@ function FloodMap() {
       onClearBarangay={handleClearBarangay}
       facilitiesVisible={facilitiesVisible}
       onToggleFacilitiesVisibility={handleToggleFacilitiesVisibility}
-      fsiModel={fsiModel}
     />
   );
 
@@ -3874,7 +3804,7 @@ function FloodMap() {
             fsiVisible={fsiVisible}
             mapMode={mapMode}
             selectedBarangayName={selectedBarangay?.name || null}
-            fsiModel={fsiModel}
+            fsiModel={DEFAULT_FSI_MODEL}
           />
 
           <POILayer
@@ -3926,9 +3856,6 @@ function FloodMap() {
           <LegendControl
             fsiVisible={fsiVisible}
             onToggleFsi={handleToggleFsi}
-            fsiModel={fsiModel}
-            onModelChange={handleModelChange}
-            availableModels={availableModels}
           />
         </MapContainer>
 
@@ -4010,7 +3937,6 @@ function FloodMap() {
             side="bottom"
             className="flex flex-col gap-0 p-0 max-h-[85dvh] sm:max-h-[80dvh] rounded-t-2xl"
           >
-            {/* Drag handle indicator */}
             <div className="pt-2 pb-1 flex justify-center">
               <div className="h-1.5 w-12 rounded-full bg-muted-foreground/30" />
             </div>
