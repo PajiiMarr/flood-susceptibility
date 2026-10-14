@@ -40,7 +40,7 @@ import {
   Search,
   Eye,
   EyeOff,
-  Menu,
+  ChevronUp,
   PanelRightClose,
   PanelRightOpen,
 } from "lucide-react";
@@ -55,7 +55,6 @@ const USE_SERVER =
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
-// Only using the Stacking model for now as requested.
 const STACKING_MODEL = import.meta.env.VITE_STACKING_MODEL || "stacking";
 const DEFAULT_FSI_MODEL = STACKING_MODEL;
 
@@ -65,10 +64,139 @@ console.log(
 );
 
 // ==========================================
+// LEGEND THEME (single source of truth for ALL legend cards)
+// Every legend (FSI + raster layers) is built from these tokens, so width,
+// padding, header, row spacing and typography are identical everywhere.
+// All sizes are numbers in px unless noted.
+// ==========================================
+const LEGEND_THEME = {
+  desktop: {
+    width: 232,
+    pad: 12,
+    borderRadius: 8,
+    titleSize: "12px",
+    labelSize: "11.5px",
+    swatchSize: 16,
+    swatchGap: 8,
+    rowGap: 6,
+    headerHeight: 30, // min header height (incl. padding + divider)
+    headerPad: 8,
+    headerGap: 8,
+    marginTop: 56,
+    marginRight: 16,
+    stackGap: 12, // vertical gap between stacked legend cards
+    boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
+  },
+  mobile: {
+    width: 176,
+    pad: 10,
+    borderRadius: 8,
+    titleSize: "11px",
+    labelSize: "10.5px",
+    swatchSize: 14,
+    swatchGap: 8,
+    rowGap: 5,
+    headerHeight: 28,
+    headerPad: 7,
+    headerGap: 7,
+    marginTop: 108,
+    marginRight: 12,
+    stackGap: 10,
+    boxShadow: "0 2px 6px rgba(0,0,0,0.16)",
+  },
+};
+
+const px = (n) => `${n}px`;
+
+// Height of the collapsed (peeking) mobile drawer handle
+const PEEK_HEIGHT = 52;
+const getLegendTheme = (compact) =>
+  LEGEND_THEME[compact ? "mobile" : "desktop"];
+
+// Card container
+const legendBaseStyle = (t) => ({
+  boxSizing: "border-box",
+  width: px(t.width),
+  maxWidth: "calc(100vw - 24px)",
+  backgroundColor: "rgba(255,255,255,0.94)",
+  backdropFilter: "blur(6px)",
+  WebkitBackdropFilter: "blur(6px)",
+  padding: px(t.pad),
+  borderRadius: px(t.borderRadius),
+  border: "1px solid rgba(0,0,0,0.06)",
+  boxShadow: t.boxShadow,
+  fontFamily: "Arial, sans-serif",
+  fontSize: t.labelSize,
+  color: "#1a1a1a",
+  lineHeight: "1.35",
+  userSelect: "none",
+});
+
+// Header row (title + optional control) with divider
+const legendHeaderStyle = (t) => ({
+  boxSizing: "border-box",
+  display: "flex",
+  alignItems: "flex-start",
+  justifyContent: "space-between",
+  gap: "8px",
+  minHeight: px(t.headerHeight),
+  paddingBottom: px(t.headerPad),
+  marginBottom: px(t.headerGap),
+  borderBottom: "1px solid rgba(0,0,0,0.08)",
+});
+
+const legendTitleStyle = (t) => ({
+  margin: 0,
+  fontSize: t.titleSize,
+  fontWeight: "700",
+  color: "#111",
+  lineHeight: "1.25",
+});
+
+// Rows container + row + swatch + label
+const legendBodyStyle = (t) => ({
+  display: "flex",
+  flexDirection: "column",
+  gap: px(t.rowGap),
+});
+
+const legendRowStyle = (t) => ({
+  display: "flex",
+  alignItems: "center",
+  gap: px(t.swatchGap),
+  minHeight: px(t.swatchSize),
+});
+
+const legendSwatchStyle = (t, color) => ({
+  boxSizing: "border-box",
+  width: px(t.swatchSize),
+  height: px(t.swatchSize),
+  borderRadius: "3px",
+  backgroundColor: color,
+  border: "1px solid rgba(0,0,0,0.12)",
+  flexShrink: 0,
+});
+
+const legendLabelStyle = (t) => ({
+  fontSize: t.labelSize,
+  color: "#222",
+  whiteSpace: "nowrap",
+  fontVariantNumeric: "tabular-nums",
+});
+
+// Estimated card height (used to stack the raster legend under the FSI legend)
+const estimateLegendHeight = (t, rows) =>
+  2 * t.pad +
+  2 + // card border
+  t.headerHeight +
+  t.headerGap +
+  rows * t.swatchSize +
+  Math.max(0, rows - 1) * t.rowGap;
+
+// ==========================================
 // FACTOR INFO MAP
 // ==========================================
 const FACTOR_INFO = {
-  // --- Raw terrain ---
   dem: { label: "Elevation", desc: "Ground height above sea level" },
   slope: { label: "Slope", desc: "Steepness of the terrain" },
   aspect: { label: "Aspect", desc: "Direction the slope faces" },
@@ -92,8 +220,6 @@ const FACTOR_INFO = {
     label: "Drainage Density",
     desc: "Stream length per unit area",
   },
-
-  // --- Rainfall ---
   chirps: { label: "CHIRPS Rainfall", desc: "Satellite rainfall estimate" },
   gpm: { label: "GPM Rainfall", desc: "Global precipitation measurement" },
   rainfall_intensity: {
@@ -112,8 +238,6 @@ const FACTOR_INFO = {
     label: "Rainfall × Flow",
     desc: "Rainfall combined with flow accumulation",
   },
-
-  // --- Engineered hydrology ---
   wetness_index: { label: "Wetness Index", desc: "TWI weighted by water flow" },
   flood_concentration: {
     label: "Flood Concentration",
@@ -143,8 +267,6 @@ const FACTOR_INFO = {
     label: "Flow / River Dist",
     desc: "Water flow relative to distance from river",
   },
-
-  // --- Terrain orientation ---
   northness: { label: "Northness", desc: "How much the slope faces north" },
   eastness: { label: "Eastness", desc: "How much the slope faces east" },
   relative_elevation: {
@@ -159,8 +281,6 @@ const FACTOR_INFO = {
     label: "HAND²",
     desc: "Nonlinear HAND effect (amplifies extremes)",
   },
-
-  // --- Proximity ---
   river_proximity: {
     label: "River Proximity",
     desc: "Inverse distance to river (higher = closer)",
@@ -173,8 +293,6 @@ const FACTOR_INFO = {
     label: "Susceptibility Index",
     desc: "Composite of wetness, proximity, rainfall",
   },
-
-  // --- Fallback-friendly short names ---
   dist_center_norm: {
     label: "Distance from Center",
     desc: "Distance to map center (sampling artifact)",
@@ -377,7 +495,6 @@ function buildLegendStops(colorScale, minVal, maxVal) {
 
 // ==========================================
 // QGIS LAYER CONFIGS
-// Only layers corresponding to RAW_FEATURES_TO_EXTRACT.
 // ==========================================
 const QGIS_LAYER_CONFIGS = {
   dem: {
@@ -902,31 +1019,29 @@ function MapResizer() {
 }
 
 // ==========================================
-// LEGEND
+// FSI LEGEND (built from the shared legend theme helpers)
 // ==========================================
-function LegendControl({ fsiVisible, onToggleFsi }) {
+function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
   const map = useMap();
   const divRef = useRef(null);
   const toggleRef = useRef(onToggleFsi);
+  const compactRef = useRef(compact);
 
   useEffect(() => {
     toggleRef.current = onToggleFsi;
   }, [onToggleFsi]);
+  useEffect(() => {
+    compactRef.current = compact;
+  }, [compact]);
 
   useEffect(() => {
     const legend = L.control({ position: "topright" });
     legend.onAdd = () => {
+      const t = getLegendTheme(compactRef.current);
       const div = L.DomUtil.create("div", "info legend");
-      div.style.backgroundColor = "rgba(255,255,255,0.9)";
-      div.style.padding = "10px";
-      div.style.borderRadius = "5px";
-      div.style.boxShadow = "0 1px 5px rgba(0,0,0,0.2)";
-      div.style.fontFamily = "Arial, sans-serif";
-      div.style.fontSize = "12px";
-      div.style.color = "black";
-      div.style.minWidth = "190px";
-      div.style.marginTop = "56px";
-      div.style.marginRight = "16px";
+      Object.assign(div.style, legendBaseStyle(t));
+      div.style.marginTop = px(t.marginTop);
+      div.style.marginRight = px(t.marginRight);
       L.DomEvent.disableClickPropagation(div);
       L.DomEvent.disableScrollPropagation(div);
       divRef.current = div;
@@ -942,25 +1057,37 @@ function LegendControl({ fsiVisible, onToggleFsi }) {
   useEffect(() => {
     const div = divRef.current;
     if (!div) return;
+    const t = getLegendTheme(compact);
+    Object.assign(div.style, legendBaseStyle(t));
+    div.style.marginTop = px(t.marginTop);
+    div.style.marginRight = px(t.marginRight);
     div.innerHTML = "";
 
+    // ----- Header: title + ON/OFF toggle -----
     const header = document.createElement("div");
-    header.style.cssText =
-      "display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;";
+    Object.assign(header.style, legendHeaderStyle(t));
+    header.style.alignItems = "center";
 
     const title = document.createElement("strong");
     title.textContent = "Flood Susceptibility";
+    Object.assign(title.style, legendTitleStyle(t));
     header.appendChild(title);
 
     const toggleBtn = document.createElement("button");
     toggleBtn.type = "button";
     toggleBtn.title = fsiVisible ? "Hide FSI layer" : "Show FSI layer";
     toggleBtn.style.cssText = `
-      border: none; background: ${fsiVisible ? "#1a73e8" : "#e0e0e0"};
+      border: none;
+      background: ${fsiVisible ? "#1a73e8" : "#e0e0e0"};
       color: ${fsiVisible ? "#fff" : "#555"};
-      font-size: 10px; font-weight: 600; padding: 3px 8px;
-      border-radius: 12px; cursor: pointer; margin-left: 10px;
-      white-space: nowrap;
+      font-size: ${compact ? "9px" : "10px"};
+      font-weight: 600;
+      padding: ${compact ? "2px 7px" : "3px 9px"};
+      border-radius: 10px;
+      cursor: pointer;
+      line-height: 1.2;
+      flex-shrink: 0;
+      transition: background 0.15s ease;
     `;
     toggleBtn.textContent = fsiVisible ? "ON" : "OFF";
     toggleBtn.addEventListener("click", (e) => {
@@ -970,24 +1097,29 @@ function LegendControl({ fsiVisible, onToggleFsi }) {
     header.appendChild(toggleBtn);
     div.appendChild(header);
 
+    // ----- Risk rows -----
+    const body = document.createElement("div");
+    Object.assign(body.style, legendBodyStyle(t));
+
     for (const [level, color] of Object.entries(RISK_LEVELS)) {
       const row = document.createElement("div");
-      row.style.cssText =
-        "display:flex; align-items:center; margin-top:4px; opacity:" +
-        (fsiVisible ? "1" : "0.4") +
-        ";";
+      Object.assign(row.style, legendRowStyle(t));
+      row.style.opacity = fsiVisible ? "1" : "0.4";
+      row.style.transition = "opacity 0.15s ease";
 
       const swatch = document.createElement("div");
-      swatch.style.cssText = `background:${color}; width:18px; height:18px; border-radius:2px; margin-right:8px;`;
+      Object.assign(swatch.style, legendSwatchStyle(t, color));
 
       const label = document.createElement("span");
       label.textContent = level;
+      Object.assign(label.style, legendLabelStyle(t));
 
       row.appendChild(swatch);
       row.appendChild(label);
-      div.appendChild(row);
+      body.appendChild(row);
     }
-  }, [fsiVisible]);
+    div.appendChild(body);
+  }, [fsiVisible, compact]);
 
   return null;
 }
@@ -2437,6 +2569,12 @@ function QGISLayerControl({
     L.DomEvent.disableScrollPropagation(containerRef.current);
   }, []);
 
+  // On compact screens, leave room for the legend column on the right
+  const mobileTheme = LEGEND_THEME.mobile;
+  const compactMaxWidth = `calc(100% - ${
+    mobileTheme.width + mobileTheme.marginRight + 16 + 8
+  }px)`;
+
   return (
     <div
       ref={containerRef}
@@ -2444,6 +2582,7 @@ function QGISLayerControl({
       style={{
         top: compact ? "112px" : "112px",
         left: "16px",
+        ...(compact ? { maxWidth: compactMaxWidth } : {}),
         backgroundColor: "rgba(255,255,255,0.92)",
         backdropFilter: "blur(6px)",
         borderRadius: "8px",
@@ -2514,57 +2653,54 @@ function QGISLayerControl({
   );
 }
 
-function QGISLegend({ layerKey, config, stats, compact = false }) {
+// ==========================================
+// QGIS LEGEND (built from the shared legend theme helpers)
+// Same card, header, rows and typography as the FSI legend.
+// Desktop: stacked directly under the FSI legend. Mobile: bottom-left.
+// ==========================================
+function QGISLegend({
+  layerKey,
+  config,
+  stats,
+  compact = false,
+  bottomOffset = 0,
+}) {
   if (!layerKey || !config || !stats) return null;
   const { minVal, maxVal } = stats;
   if (minVal == null || maxVal == null) return null;
   const stops = buildLegendStops(config.colorScale, minVal, maxVal);
+
+  const t = getLegendTheme(compact);
+  const fsiRows = Object.keys(RISK_LEVELS).length;
+  const position = compact
+    ? { bottom: px(24 + bottomOffset), left: "16px" }
+    : {
+        top: px(t.marginTop + estimateLegendHeight(t, fsiRows) + t.stackGap),
+        right: px(t.marginRight),
+      };
+
   return (
     <div
       className="absolute z-[1000]"
-      style={{
-        ...(compact
-          ? { bottom: "24px", left: "16px" }
-          : { top: "340px", right: "16px" }),
-        backgroundColor: "rgba(255,255,255,0.92)",
-        padding: "10px 12px",
-        borderRadius: "6px",
-        boxShadow: "0 1px 5px rgba(0,0,0,0.25)",
-        fontFamily: "Arial, sans-serif",
-        fontSize: "11px",
-        color: "#222",
-        minWidth: "180px",
-      }}
+      style={{ ...position, ...legendBaseStyle(t) }}
     >
-      <div style={{ fontWeight: "bold", marginBottom: "6px" }}>
-        {config.name}
+      {/* Header */}
+      <div style={legendHeaderStyle(t)}>
+        <div style={legendTitleStyle(t)}>{config.name}</div>
       </div>
-      {stops.map((s, i) => (
-        <div
-          key={i}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            marginTop: i === 0 ? 0 : "4px",
-          }}
-        >
-          <div
-            style={{
-              width: "18px",
-              height: "14px",
-              borderRadius: "2px",
-              marginRight: "8px",
-              backgroundColor: s.color,
-              border: "1px solid rgba(0,0,0,0.15)",
-              flexShrink: 0,
-            }}
-          />
-          <span>
-            {formatRasterValue(s.v0)} – {formatRasterValue(s.v1)}
-            {config.unit || ""}
-          </span>
-        </div>
-      ))}
+
+      {/* Stop rows */}
+      <div style={legendBodyStyle(t)}>
+        {stops.map((s, i) => (
+          <div key={i} style={legendRowStyle(t)}>
+            <div style={legendSwatchStyle(t, s.color)} />
+            <span style={legendLabelStyle(t)}>
+              {formatRasterValue(s.v0)} – {formatRasterValue(s.v1)}
+              {config.unit || ""}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -3720,6 +3856,7 @@ function FloodMap() {
   );
 
   const sidebarOpenNow = isDesktop ? sidebarOpen : drawerOpen;
+  const showPeek = !isDesktop && !drawerOpen;
 
   return (
     <div className="flex w-full h-screen supports-[height:100dvh]:h-dvh overflow-hidden">
@@ -3728,6 +3865,7 @@ function FloodMap() {
         className={cn(
           "relative isolate flex-1 min-w-0 h-full",
           compact && "map-compact",
+          showPeek && "has-peek",
         )}
       >
         <style>{`
@@ -3754,8 +3892,10 @@ function FloodMap() {
           .marker-cluster { background: transparent !important; border: none !important; box-shadow: none !important; }
           .marker-cluster div { background: transparent !important; border: none !important; box-shadow: none !important; }
           .leaflet-interactive { pointer-events: auto !important; }
-          .map-compact .leaflet-top.leaflet-right { margin-top: 112px; }
-          .map-compact .info.legend { max-width: 190px; }
+          .info.legend { margin-bottom: 0; }
+          .has-peek .leaflet-control-container .leaflet-bottom .leaflet-right {
+            margin-bottom: ${PEEK_HEIGHT + 20}px !important;
+          }
         `}</style>
 
         <MapContainer
@@ -3832,30 +3972,50 @@ function FloodMap() {
           <LegendControl
             fsiVisible={fsiVisible}
             onToggleFsi={handleToggleFsi}
+            compact={compact}
           />
         </MapContainer>
 
-        <Button
-          type="button"
-          variant="secondary"
-          size="icon"
-          onClick={handleToggleSidebar}
-          aria-label={sidebarOpenNow ? "Close sidebar" : "Open sidebar"}
-          aria-expanded={sidebarOpenNow}
-          aria-controls="flood-map-sidebar"
-          title={sidebarOpenNow ? "Close sidebar" : "Open sidebar"}
-          className="absolute top-4 right-4 z-[2000] h-10 w-10 shadow-md bg-white/85 backdrop-blur hover:bg-white"
-        >
-          {isDesktop ? (
-            sidebarOpen ? (
+        {isDesktop && (
+          <Button
+            type="button"
+            variant="secondary"
+            size="icon"
+            onClick={handleToggleSidebar}
+            aria-label={sidebarOpenNow ? "Close sidebar" : "Open sidebar"}
+            aria-expanded={sidebarOpenNow}
+            aria-controls="flood-map-sidebar"
+            title={sidebarOpenNow ? "Close sidebar" : "Open sidebar"}
+            className="absolute top-4 right-4 z-[2000] h-10 w-10 shadow-md bg-white/85 backdrop-blur hover:bg-white"
+          >
+            {sidebarOpen ? (
               <PanelRightClose className="h-5 w-5" />
             ) : (
               <PanelRightOpen className="h-5 w-5" />
-            )
-          ) : (
-            <Menu className="h-5 w-5" />
-          )}
-        </Button>
+            )}
+          </Button>
+        )}
+
+        {/* Mobile: peeking top edge of the drawer; tap to slide it up */}
+        {showPeek && (
+          <button
+            type="button"
+            onClick={() => setDrawerOpen(true)}
+            aria-label="Open details drawer"
+            aria-expanded={false}
+            aria-controls="flood-map-sidebar"
+            style={{ height: PEEK_HEIGHT }}
+            className="absolute bottom-0 left-0 right-0 z-[2000] flex flex-col items-center justify-start gap-1 rounded-t-2xl border-t bg-background/95 px-4 pt-2 shadow-[0_-2px_10px_rgba(0,0,0,0.15)] backdrop-blur"
+          >
+            <span className="h-1.5 w-12 rounded-full bg-muted-foreground/30" />
+            <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+              <ChevronUp className="h-4 w-4 text-muted-foreground" />
+              {mapMode === "barangay"
+                ? "Barangay Details"
+                : "Nearby Facilities"}
+            </span>
+          </button>
+        )}
 
         <QGISLayerControl
           onLayerToggle={handleLayerToggle}
@@ -3870,6 +4030,7 @@ function FloodMap() {
           config={activeLayerKey ? QGIS_LAYER_CONFIGS[activeLayerKey] : null}
           stats={activeLayerKey ? qgisLayerStats[activeLayerKey] : null}
           compact={compact}
+          bottomOffset={showPeek ? PEEK_HEIGHT : 0}
         />
 
         <MapModeControl
@@ -3906,7 +4067,6 @@ function FloodMap() {
         </aside>
       )}
 
-      {/* Mobile drawer — slides from the BOTTOM */}
       {!isDesktop && (
         <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
           <SheetContent
