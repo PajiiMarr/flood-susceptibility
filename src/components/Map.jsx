@@ -375,6 +375,10 @@ function buildLegendStops(colorScale, minVal, maxVal) {
   });
 }
 
+// ==========================================
+// QGIS LAYER CONFIGS
+// Only layers corresponding to RAW_FEATURES_TO_EXTRACT.
+// ==========================================
 const QGIS_LAYER_CONFIGS = {
   dem: {
     name: "Digital Elevation Model",
@@ -383,15 +387,6 @@ const QGIS_LAYER_CONFIGS = {
     opacity: 0.8,
     previewColor: "#4CAF50",
     description: "Terrain elevation data",
-    unit: " m",
-  },
-  dem_filled: {
-    name: "Filled DEM",
-    path: buildAzurePath("Zamboanga_DEM_Filled.tiff"),
-    colorScale: "terrain",
-    opacity: 0.8,
-    previewColor: "#8BC34A",
-    description: "Sink-filled elevation model",
     unit: " m",
   },
   slope: {
@@ -439,15 +434,6 @@ const QGIS_LAYER_CONFIGS = {
     description: "Water concentration areas",
     unit: " cells",
   },
-  flow_accumulation_log: {
-    name: "Flow Accumulation (Log)",
-    path: buildAzurePath("Zamboanga_Flow_Accumulation_Log.tif"),
-    colorScale: "blues",
-    opacity: 0.8,
-    previewColor: "#26C6DA",
-    description: "Log-transformed flow",
-    unit: "",
-  },
   chirps: {
     name: "CHIRPS Rainfall",
     path: buildAzurePath("Zamboanga_CHIRPS_Resampled.tiff"),
@@ -457,24 +443,6 @@ const QGIS_LAYER_CONFIGS = {
     description: "Rainfall data",
     unit: " mm",
   },
-  river_network: {
-    name: "River Network",
-    path: buildAzurePath("Zamboanga_River_Network.tiff"),
-    colorScale: "blues",
-    opacity: 0.8,
-    previewColor: "#1565C0",
-    description: "River/stream network",
-    unit: "",
-  },
-  drainage_density: {
-    name: "Drainage Density",
-    path: buildAzurePath("Zamboanga_Drainage_Density.tiff"),
-    colorScale: "greens",
-    opacity: 0.8,
-    previewColor: "#2E7D32",
-    description: "Stream frequency",
-    unit: " km/km²",
-  },
   distance_to_river: {
     name: "Distance to River",
     path: buildAzurePath("Zamboanga_Distance_to_river.tiff"),
@@ -483,15 +451,6 @@ const QGIS_LAYER_CONFIGS = {
     previewColor: "#6A1B9A",
     description: "Proximity to water bodies",
     unit: " m",
-  },
-  rivers_raster: {
-    name: "Rivers Raster",
-    path: buildAzurePath("Zamboanga_Rivers_Rasters.tif"),
-    colorScale: "blues",
-    opacity: 0.8,
-    previewColor: "#0D47A1",
-    description: "Rasterized rivers",
-    unit: "",
   },
 };
 
@@ -1170,15 +1129,15 @@ function MapModeControl({ mode, onModeChange, compact = false }) {
   }, []);
 
   const baseBtnStyle = {
-    padding: compact ? "6px 10px" : "7px 14px",
-    fontSize: "12px",
+    padding: compact ? "5px 8px" : "7px 14px",
+    fontSize: compact ? "11px" : "12px",
     fontFamily: "Arial, sans-serif",
     border: "none",
     borderRadius: "6px",
     cursor: "pointer",
     display: "flex",
     alignItems: "center",
-    gap: "6px",
+    gap: "4px",
     transition: "all 0.15s ease",
     whiteSpace: "nowrap",
   };
@@ -1201,9 +1160,9 @@ function MapModeControl({ mode, onModeChange, compact = false }) {
       ref={containerRef}
       style={{
         position: "absolute",
-        top: compact ? "64px" : "16px",
-        left: compact ? "16px" : "50%",
-        transform: compact ? "none" : "translateX(-50%)",
+        top: compact ? "60px" : "16px",
+        left: "50%",
+        transform: "translateX(-50%)",
         zIndex: 2000,
         backgroundColor: "rgba(255,255,255,0.85)",
         backdropFilter: "blur(10px)",
@@ -1237,7 +1196,7 @@ function MapModeControl({ mode, onModeChange, compact = false }) {
   );
 }
 
-function MapSearchControl({ cityBoundary, onSelectLocation }) {
+function MapSearchControl({ cityBoundary, onSelectLocation, compact = false }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [showResults, setShowResults] = useState(false);
@@ -1323,7 +1282,7 @@ function MapSearchControl({ cityBoundary, onSelectLocation }) {
         top: "16px",
         left: "16px",
         zIndex: 2000,
-        width: "320px",
+        width: compact ? "200px" : "320px",
         maxWidth: "calc(100% - 32px)",
         pointerEvents: "auto",
       }}
@@ -1344,7 +1303,9 @@ function MapSearchControl({ cityBoundary, onSelectLocation }) {
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
           <Input
             type="text"
-            placeholder="Search a place in Zamboanga City…"
+            placeholder={
+              compact ? "Search place…" : "Search a place in Zamboanga City…"
+            }
             value={query}
             onChange={onChange}
             onFocus={() => {
@@ -2131,6 +2092,7 @@ function ZamboangaMask({
   const prevSelectedRef = useRef(null);
   const barangayDataRef = useRef(null);
   const popMapRef = useRef(null);
+  const activeTooltipRef = useRef(null);
 
   const rasterActiveRef = useRef(rasterActive);
   useEffect(() => {
@@ -2151,6 +2113,20 @@ function ZamboangaMask({
   };
   const getBaseBorder = () =>
     fsiVisibleRef.current ? FSI_OPACITY.borderOpacity : 0;
+
+  useEffect(() => {
+    if (!map) return;
+    const handleMapMouseOut = () => {
+      if (activeTooltipRef.current) {
+        activeTooltipRef.current.closeTooltip();
+        activeTooltipRef.current = null;
+      }
+    };
+    map.on("mouseout", handleMapMouseOut);
+    return () => {
+      map.off("mouseout", handleMapMouseOut);
+    };
+  }, [map]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2323,53 +2299,54 @@ function ZamboangaMask({
             },
           );
 
-          let clickOpened = false;
-
           ly.on("mouseover", function () {
             const show = fsiVisibleRef.current;
+
             if (mapModeRef.current === "barangay") {
               if (prevSelectedRef.current !== this && show) {
                 this.setStyle({ fillOpacity: FSI_OPACITY.hover, weight: 2 });
               } else {
                 this.setStyle({ weight: 2 });
               }
-              return;
-            }
-            if (show) {
-              this.setStyle({ fillOpacity: FSI_OPACITY.hover, weight: 2 });
             } else {
-              this.setStyle({ weight: 2, fillOpacity: 0, opacity: 0 });
+              if (show) {
+                this.setStyle({ fillOpacity: FSI_OPACITY.hover, weight: 2 });
+              } else {
+                this.setStyle({ weight: 2, fillOpacity: 0, opacity: 0 });
+              }
             }
-            if (!clickOpened) this.openTooltip();
+
+            if (show) {
+              if (
+                activeTooltipRef.current &&
+                activeTooltipRef.current !== this
+              ) {
+                activeTooltipRef.current.closeTooltip();
+              }
+              this.openTooltip();
+              activeTooltipRef.current = this;
+            }
           });
 
           ly.on("mouseout", function () {
-            if (prevSelectedRef.current === this) return;
             const show = fsiVisibleRef.current;
             const r = this.feature?.properties?.fsi_risk || "Low Risk";
-            this.setStyle({
-              fillColor: show
-                ? RISK_LEVELS[r] || RISK_LEVELS["Low Risk"]
-                : "transparent",
-              color: show ? "#ffffff" : "transparent",
-              fillOpacity: getBaseFill(),
-              weight: 1,
-              opacity: getBaseBorder(),
-            });
-            if (!clickOpened) this.closeTooltip();
-          });
 
-          ly.on("click", function () {
-            if (mapModeRef.current === "barangay") return;
-            const tt = this.getTooltip();
-            if (tt) {
-              if (tt.isOpen()) {
-                this.closeTooltip();
-                clickOpened = false;
-              } else {
-                this.openTooltip();
-                clickOpened = true;
-              }
+            if (prevSelectedRef.current !== this) {
+              this.setStyle({
+                fillColor: show
+                  ? RISK_LEVELS[r] || RISK_LEVELS["Low Risk"]
+                  : "transparent",
+                color: show ? "#ffffff" : "transparent",
+                fillOpacity: getBaseFill(),
+                weight: 1,
+                opacity: getBaseBorder(),
+              });
+            }
+
+            if (activeTooltipRef.current === this) {
+              this.closeTooltip();
+              activeTooltipRef.current = null;
             }
           });
         },
@@ -3014,7 +2991,6 @@ function FactorsList({ factors, loading, error }) {
         </div>
       </div>
 
-      {/* Legend / value meaning */}
       <div className="rounded-md bg-muted/40 p-2 text-[11px] text-muted-foreground leading-relaxed">
         Each factor below shows how much it pushed <em>this barangay's</em>{" "}
         flood probability.
@@ -3905,6 +3881,7 @@ function FloodMap() {
         <MapSearchControl
           cityBoundary={cityBoundary}
           onSelectLocation={handleSearchSelect}
+          compact={compact}
         />
       </div>
 
