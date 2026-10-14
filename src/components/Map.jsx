@@ -25,6 +25,14 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { cn } from "@/lib/utils";
+import {
   MapPin,
   MapPinOff,
   Users,
@@ -32,6 +40,9 @@ import {
   Search,
   Eye,
   EyeOff,
+  Menu,
+  PanelRightClose,
+  PanelRightOpen,
 } from "lucide-react";
 
 export const EVACUATION_CENTER_TYPE = "Evacuation Center";
@@ -44,19 +55,178 @@ const USE_SERVER =
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
-// Two models exposed by the backend, both available at runtime.
 const MGWR_MODEL = import.meta.env.VITE_MGWR_MODEL || "mgwr";
 const STACKING_MODEL = import.meta.env.VITE_STACKING_MODEL || "stacking";
-
-// The FSI model used by default for map coloring. MGWR won on test AUC
-// (0.8285) and R² (0.5044); Stacking (0.8125) is the strongest on the
-// full 47-feature set. Toggle at runtime via the legend.
 const DEFAULT_FSI_MODEL = MGWR_MODEL;
 
 console.log(
   `[FSI] server=${USE_SERVER ? "ON" : "OFF"} base=${API_BASE_URL} ` +
     `models=[${MGWR_MODEL}, ${STACKING_MODEL}] default=${DEFAULT_FSI_MODEL}`,
 );
+
+// ==========================================
+// FACTOR INFO MAP
+// ==========================================
+// Friendly display name + short description of what the feature measures.
+// Used to make the "Top contributing factors" panel readable.
+const FACTOR_INFO = {
+  // --- Raw terrain ---
+  dem: { label: "Elevation", desc: "Ground height above sea level" },
+  slope: { label: "Slope", desc: "Steepness of the terrain" },
+  aspect: { label: "Aspect", desc: "Direction the slope faces" },
+  twi: {
+    label: "Wetness Index",
+    desc: "Tendency of terrain to accumulate water",
+  },
+  hand: {
+    label: "Height Above Drainage",
+    desc: "Elevation above the nearest stream",
+  },
+  flow_accumulation: {
+    label: "Flow Accumulation",
+    desc: "Volume of water flowing through the area",
+  },
+  distance_to_river: {
+    label: "Distance to River",
+    desc: "How far the point is from the nearest river",
+  },
+  drainage_density: {
+    label: "Drainage Density",
+    desc: "Stream length per unit area",
+  },
+
+  // --- Rainfall ---
+  chirps: { label: "CHIRPS Rainfall", desc: "Satellite rainfall estimate" },
+  gpm: { label: "GPM Rainfall", desc: "Global precipitation measurement" },
+  rainfall_intensity: {
+    label: "Rainfall Intensity",
+    desc: "Combined rainfall from CHIRPS + GPM",
+  },
+  rainfall_ratio: {
+    label: "Rainfall Ratio",
+    desc: "Balance between the two rainfall sources",
+  },
+  rainfall_wetness: {
+    label: "Rainfall × Wetness",
+    desc: "Rainfall combined with terrain wetness",
+  },
+  rainfall_flow: {
+    label: "Rainfall × Flow",
+    desc: "Rainfall combined with flow accumulation",
+  },
+
+  // --- Engineered hydrology ---
+  wetness_index: { label: "Wetness Index", desc: "TWI weighted by water flow" },
+  flood_concentration: {
+    label: "Flood Concentration",
+    desc: "Runoff accumulated near rivers",
+  },
+  twi_hand_ratio: {
+    label: "Wetness / HAND",
+    desc: "Ratio of wetness to elevation above drainage",
+  },
+  twi_hand: {
+    label: "Wetness × HAND",
+    desc: "Interaction between wetness and HAND",
+  },
+  twi_slope_ratio: {
+    label: "Wetness / Slope",
+    desc: "Wetness relative to terrain steepness",
+  },
+  hand_dem_ratio: {
+    label: "HAND / Elevation",
+    desc: "Low-lying areas relative to total elevation",
+  },
+  dem_river_ratio: {
+    label: "Elevation / River Dist",
+    desc: "Height relative to river proximity",
+  },
+  flow_dist_ratio: {
+    label: "Flow / River Dist",
+    desc: "Water flow relative to distance from river",
+  },
+
+  // --- Terrain orientation ---
+  northness: { label: "Northness", desc: "How much the slope faces north" },
+  eastness: { label: "Eastness", desc: "How much the slope faces east" },
+  relative_elevation: {
+    label: "Relative Elevation",
+    desc: "HAND divided by overall elevation",
+  },
+  slope_aspect: {
+    label: "Slope × Aspect",
+    desc: "Combined effect of steepness and direction",
+  },
+  hand_squared: {
+    label: "HAND²",
+    desc: "Nonlinear HAND effect (amplifies extremes)",
+  },
+
+  // --- Proximity ---
+  river_proximity: {
+    label: "River Proximity",
+    desc: "Inverse distance to river (higher = closer)",
+  },
+  floodplain_index: {
+    label: "Floodplain Index",
+    desc: "Flat, low areas near water",
+  },
+  flood_susceptibility_index: {
+    label: "Susceptibility Index",
+    desc: "Composite of wetness, proximity, rainfall",
+  },
+
+  // --- Fallback-friendly short names ---
+  dist_center_norm: {
+    label: "Distance from Center",
+    desc: "Distance to map center (sampling artifact)",
+  },
+  drainage_capacity: {
+    label: "Drainage Capacity",
+    desc: "Slope relative to drainage density",
+  },
+  saturation_index: {
+    label: "Saturation Index",
+    desc: "HAND relative to flow accumulation",
+  },
+  terrain_roughness: {
+    label: "Terrain Roughness",
+    desc: "Slope combined with aspect variation",
+  },
+  flash_flood_potential: {
+    label: "Flash Flood Potential",
+    desc: "Steep slope × heavy rain",
+  },
+  water_logging_potential: {
+    label: "Water Logging",
+    desc: "Flat areas with high wetness",
+  },
+  slope_flow: {
+    label: "Slope × Flow",
+    desc: "Steepness combined with water flow",
+  },
+  dist_slope: {
+    label: "Distance × Slope",
+    desc: "River distance combined with steepness",
+  },
+  drainage_rainfall: {
+    label: "Drainage × Rain",
+    desc: "Stream density combined with rainfall",
+  },
+  river_influence: {
+    label: "River Influence",
+    desc: "Distance × drainage density",
+  },
+};
+
+function getFactorInfo(name) {
+  return (
+    FACTOR_INFO[name] || {
+      label: name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+      desc: "",
+    }
+  );
+}
 
 const WORLD_RING = [
   [-90, -180],
@@ -114,9 +284,6 @@ const MARITIME_BOUNDARY_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
 const POPULATION_XLSX_URL =
   "https://xflhynxdadwlrloxiogv.supabase.co/storage/v1/object/public/fsi-bucket/SOCIO%20DEMOGRAPHIC%20DATAS/Region-IX_0.xlsx";
 
-// ==========================================
-// AZURE BLOB STORAGE CONFIGURATION
-// ==========================================
 const BLOB_SAS_URL = import.meta.env.VITE_BLOB_SAS_URL || "";
 
 function buildAzurePath(relativePath) {
@@ -621,8 +788,6 @@ async function fetchServerFsiBatch(points, model = DEFAULT_FSI_MODEL) {
   return res.json();
 }
 
-// Resolve FSI per barangay using the given model. Returns a Map keyed
-// by barangay name -> { risk, probability, centroid, top_factors }.
 async function resolveBarangayFsi(features, model = DEFAULT_FSI_MODEL) {
   const result = new Map();
 
@@ -744,6 +909,42 @@ function useBarangayExplanation(barangay, model) {
 }
 
 // ==========================================
+// RESPONSIVE HELPERS
+// ==========================================
+
+function useMediaQuery(query) {
+  const [matches, setMatches] = useState(
+    () => typeof window !== "undefined" && window.matchMedia(query).matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const handler = (e) => setMatches(e.matches);
+    setMatches(mq.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, [query]);
+  return matches;
+}
+
+function MapResizer() {
+  const map = useMap();
+  useEffect(() => {
+    const container = map.getContainer();
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => map.invalidateSize({ animate: false }));
+    });
+    ro.observe(container);
+    return () => {
+      ro.disconnect();
+      cancelAnimationFrame(raf);
+    };
+  }, [map]);
+  return null;
+}
+
+// ==========================================
 // LEGEND + MODEL TOGGLE
 // ==========================================
 function LegendControl({
@@ -781,6 +982,8 @@ function LegendControl({
       div.style.fontSize = "12px";
       div.style.color = "black";
       div.style.minWidth = "190px";
+      div.style.marginTop = "56px";
+      div.style.marginRight = "16px";
       L.DomEvent.disableClickPropagation(div);
       L.DomEvent.disableScrollPropagation(div);
       divRef.current = div;
@@ -824,7 +1027,6 @@ function LegendControl({
     header.appendChild(toggleBtn);
     div.appendChild(header);
 
-    // Model toggle
     if (availableModels.length > 1) {
       const modelRow = document.createElement("div");
       modelRow.style.cssText =
@@ -877,7 +1079,7 @@ function LegendControl({
 }
 
 // ==========================================
-// MAP CONTROLS (unchanged)
+// MAP CONTROLS
 // ==========================================
 
 function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
@@ -1003,7 +1205,7 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
   return null;
 }
 
-function MapModeControl({ mode, onModeChange }) {
+function MapModeControl({ mode, onModeChange, compact = false }) {
   const containerRef = useRef(null);
 
   useEffect(() => {
@@ -1013,7 +1215,7 @@ function MapModeControl({ mode, onModeChange }) {
   }, []);
 
   const baseBtnStyle = {
-    padding: "7px 14px",
+    padding: compact ? "6px 10px" : "7px 14px",
     fontSize: "12px",
     fontFamily: "Arial, sans-serif",
     border: "none",
@@ -1044,9 +1246,9 @@ function MapModeControl({ mode, onModeChange }) {
       ref={containerRef}
       style={{
         position: "absolute",
-        top: "16px",
-        left: "50%",
-        transform: "translateX(-50%)",
+        top: compact ? "64px" : "16px",
+        left: compact ? "16px" : "50%",
+        transform: compact ? "none" : "translateX(-50%)",
         zIndex: 2000,
         backgroundColor: "rgba(255,255,255,0.85)",
         backdropFilter: "blur(10px)",
@@ -1604,7 +1806,6 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
   return null;
 }
 
-// MODIFIED: now returns probability + centroid + lat/lng for factors lookup
 function findBarangayForPoint(latlng, barangayData) {
   if (!barangayData) return null;
   const pt = [latlng.lng, latlng.lat];
@@ -1957,7 +2158,6 @@ function RoutingLayer({
   return null;
 }
 
-// MODIFIED: FSI layer rebuilt when fsiModel changes
 function ZamboangaMask({
   onBoundaryLoaded,
   onBarangaysLoaded,
@@ -1997,7 +2197,6 @@ function ZamboangaMask({
   const getBaseBorder = () =>
     fsiVisibleRef.current ? FSI_OPACITY.borderOpacity : 0;
 
-  // One-time load of boundaries + populations
   useEffect(() => {
     let cancelled = false;
     if (!map.getPane("fsi-pane")) {
@@ -2071,11 +2270,9 @@ function ZamboangaMask({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map]);
 
-  // (Re)build FSI layer whenever fsiModel changes
   useEffect(() => {
     let cancelled = false;
     const build = async () => {
-      // Wait for the base data to be ready
       let waited = 0;
       while (!barangayDataRef.current && waited < 10000 && !cancelled) {
         await new Promise((r) => setTimeout(r, 100));
@@ -2122,7 +2319,6 @@ function ZamboangaMask({
       const updated = { ...barangayData, features: featuresWithRisk };
       onBarangaysLoaded?.(updated);
 
-      // Remove existing barangay layer, add new one
       if (barangayLayerRef.current) {
         map.removeLayer(barangayLayerRef.current);
       }
@@ -2290,7 +2486,7 @@ function ZamboangaMask({
 }
 
 // ==========================================
-// QGIS LAYERS (unchanged)
+// QGIS LAYERS
 // ==========================================
 
 function QGISLayerControl({
@@ -2298,8 +2494,9 @@ function QGISLayerControl({
   activeLayers,
   layerErrors,
   layerLoading,
+  compact = false,
 }) {
-  const [isOpen, setIsOpen] = useState(true);
+  const [isOpen, setIsOpen] = useState(!compact);
   const containerRef = useRef(null);
 
   useEffect(() => {
@@ -2311,8 +2508,10 @@ function QGISLayerControl({
   return (
     <div
       ref={containerRef}
-      className="absolute top-20 left-4 z-[1000] min-w-[160px] max-w-[220px]"
+      className="absolute z-[1000] min-w-[160px] max-w-[220px]"
       style={{
+        top: compact ? "112px" : "112px",
+        left: "16px",
         backgroundColor: "rgba(255,255,255,0.92)",
         backdropFilter: "blur(6px)",
         borderRadius: "8px",
@@ -2383,7 +2582,7 @@ function QGISLayerControl({
   );
 }
 
-function QGISLegend({ layerKey, config, stats }) {
+function QGISLegend({ layerKey, config, stats, compact = false }) {
   if (!layerKey || !config || !stats) return null;
   const { minVal, maxVal } = stats;
   if (minVal == null || maxVal == null) return null;
@@ -2392,8 +2591,9 @@ function QGISLegend({ layerKey, config, stats }) {
     <div
       className="absolute z-[1000]"
       style={{
-        top: "260px",
-        right: "16px",
+        ...(compact
+          ? { bottom: "24px", left: "16px" }
+          : { top: "340px", right: "16px" }),
         backgroundColor: "rgba(255,255,255,0.92)",
         padding: "10px 12px",
         borderRadius: "6px",
@@ -2853,31 +3053,60 @@ function FactorsList({ factors, loading, error, modelLabel }) {
   );
 
   return (
-    <div className="space-y-1.5">
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">
-        Top contributing factors
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-xs uppercase tracking-wide text-muted-foreground">
+          Top Contributing Factors
+        </div>
         {modelLabel ? (
-          <span className="ml-1.5 text-[10px] font-mono bg-muted px-1.5 py-0.5 rounded">
+          <span className="text-[10px] font-mono bg-muted px-1.5 py-0.5 rounded">
             {modelLabel.toUpperCase()}
           </span>
         ) : null}
       </div>
+
+      {/* Legend / value meaning */}
+      <div className="rounded-md bg-muted/40 p-2 text-[11px] text-muted-foreground leading-relaxed">
+        Each factor below shows how much it pushed <em>this barangay's</em>{" "}
+        flood probability.
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+          <span className="inline-flex items-center gap-1">
+            <span className="inline-block w-2 h-2 rounded-full bg-[#d73027]" />
+            <strong className="text-[#d73027]">Higher risk</strong> — raises
+            flood probability
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="inline-block w-2 h-2 rounded-full bg-[#4575b4]" />
+            <strong className="text-[#4575b4]">Lower risk</strong> — reduces
+            flood probability
+          </span>
+        </div>
+      </div>
+
       {factors.map((f, i) => {
+        const info = getFactorInfo(f.feature);
         const pct = (Math.abs(f.contribution) / maxAbs) * 100;
         const positive = f.contribution > 0;
         const barColor = positive ? "#d73027" : "#4575b4";
         return (
           <div key={i} className="text-xs">
-            <div className="flex justify-between mb-0.5">
-              <span className="font-medium truncate">{f.feature}</span>
+            <div className="flex justify-between items-baseline mb-0.5 gap-2">
+              <span className="font-medium truncate" title={f.feature}>
+                {info.label}
+              </span>
               <span
-                className="ml-2 tabular-nums"
+                className="ml-2 tabular-nums shrink-0"
                 style={{ color: barColor, fontWeight: 600 }}
               >
-                {positive ? "+" : ""}
-                {(f.contribution * 100).toFixed(1)}%
+                {positive ? "↑" : "↓"}{" "}
+                {(Math.abs(f.contribution) * 100).toFixed(1)}%
               </span>
             </div>
+            {info.desc && (
+              <div className="text-[10px] text-muted-foreground leading-snug mb-1">
+                {info.desc}
+              </div>
+            )}
             <div className="h-1.5 bg-muted rounded-full overflow-hidden">
               <div
                 className="h-full transition-all"
@@ -3355,7 +3584,6 @@ function FloodMap() {
   const [qgisLayerStats, setQgisLayerStats] = useState({});
   const [fsiVisible, setFsiVisible] = useState(true);
 
-  // Model used for FSI coloring. Swappable via the legend.
   const [fsiModel, setFsiModel] = useState(DEFAULT_FSI_MODEL);
   const availableModels = useMemo(
     () => Array.from(new Set([MGWR_MODEL, STACKING_MODEL])).filter(Boolean),
@@ -3376,6 +3604,36 @@ function FloodMap() {
   const [facilitiesVisible, setFacilitiesVisible] = useState(true);
   const [mapMode, setMapMode] = useState("marker");
   const [selectedBarangay, setSelectedBarangay] = useState(null);
+
+  const isDesktop = useMediaQuery("(min-width: 1024px)");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const mapAreaRef = useRef(null);
+  const [mapWidth, setMapWidth] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth : 1200,
+  );
+  const compact = mapWidth < 900;
+
+  useEffect(() => {
+    const el = mapAreaRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      setMapWidth(entry.contentRect.width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const handleToggleSidebar = useCallback(() => {
+    if (isDesktop) setSidebarOpen((v) => !v);
+    else setDrawerOpen((v) => !v);
+  }, [isDesktop]);
+
+  useEffect(() => {
+    if (!isDesktop && (selection.mode === "done" || selectedBarangay)) {
+      setDrawerOpen(true);
+    }
+  }, [isDesktop, selection.mode, selectedBarangay]);
 
   const searchSelectRef = useRef(null);
   const clearLocationRef = useRef(null);
@@ -3512,7 +3770,6 @@ function FloodMap() {
   }, []);
   const handleToggleFsi = useCallback(() => setFsiVisible((v) => !v), []);
 
-  // Changing the FSI model must also refresh the currently selected barangay
   const handleModelChange = useCallback((newModel) => {
     setFsiModel(newModel);
     setSelectedBarangay(null);
@@ -3539,152 +3796,240 @@ function FloodMap() {
     (selectedTypes.length === 0 ||
       selectedTypes.includes(EVACUATION_CENTER_TYPE));
 
+  const sidebarContent = (
+    <FacilityDetailsPanel
+      selection={selection}
+      onUseMyLocation={handleUseMyLocationClick}
+      facilityTypes={facilityTypes}
+      selectedTypes={selectedTypes}
+      onSelectAllTypes={handleSelectAllTypes}
+      onToggleType={handleToggleType}
+      mapMode={mapMode}
+      selectedBarangay={selectedBarangay}
+      onClearBarangay={handleClearBarangay}
+      facilitiesVisible={facilitiesVisible}
+      onToggleFacilitiesVisibility={handleToggleFacilitiesVisibility}
+      fsiModel={fsiModel}
+    />
+  );
+
+  const sidebarOpenNow = isDesktop ? sidebarOpen : drawerOpen;
+
   return (
-    <div className="flex w-full h-screen">
-      <div className="w-3/4 h-full">
-        <div style={{ position: "relative", height: "100%", width: "100%" }}>
-          <style>{`
-            .barangay-label {
-              background: rgba(0,0,0,0.75);
-              border: none; border-radius: 4px; color: #ffffff;
-              font-size: 11px; font-weight: 500; padding: 3px 7px;
-              white-space: nowrap;
-            }
-            .barangay-label::before { display: none; }
-            .custom-poi-icon { background: none; border: none; }
-            .search-item:last-child { border-bottom: none; }
-            .search-item:hover { background: #f2f2f2; }
-            .leaflet-tooltip { pointer-events: none !important; }
-            .leaflet-control-container .leaflet-bottom .leaflet-right {
-              display: flex !important; flex-direction: row !important;
-              gap: 8px !important; margin-bottom: 20px !important;
-            }
-            .leaflet-control-container .leaflet-bottom .leaflet-right .leaflet-control {
-              margin: 0 !important;
-            }
-            .custom-cluster-icon { background: transparent !important; border: none !important; }
-            .custom-cluster-icon div { background: transparent !important; border: none !important; }
-            .marker-cluster { background: transparent !important; border: none !important; box-shadow: none !important; }
-            .marker-cluster div { background: transparent !important; border: none !important; box-shadow: none !important; }
-            .leaflet-interactive { pointer-events: auto !important; }
-          `}</style>
+    <div className="flex w-full h-screen supports-[height:100dvh]:h-dvh overflow-hidden">
+      <div
+        ref={mapAreaRef}
+        className={cn(
+          "relative isolate flex-1 min-w-0 h-full",
+          compact && "map-compact",
+        )}
+      >
+        <style>{`
+          .barangay-label {
+            background: rgba(0,0,0,0.75);
+            border: none; border-radius: 4px; color: #ffffff;
+            font-size: 11px; font-weight: 500; padding: 3px 7px;
+            white-space: nowrap;
+          }
+          .barangay-label::before { display: none; }
+          .custom-poi-icon { background: none; border: none; }
+          .search-item:last-child { border-bottom: none; }
+          .search-item:hover { background: #f2f2f2; }
+          .leaflet-tooltip { pointer-events: none !important; }
+          .leaflet-control-container .leaflet-bottom .leaflet-right {
+            display: flex !important; flex-direction: row !important;
+            gap: 8px !important; margin-bottom: 20px !important;
+          }
+          .leaflet-control-container .leaflet-bottom .leaflet-right .leaflet-control {
+            margin: 0 !important;
+          }
+          .custom-cluster-icon { background: transparent !important; border: none !important; }
+          .custom-cluster-icon div { background: transparent !important; border: none !important; }
+          .marker-cluster { background: transparent !important; border: none !important; box-shadow: none !important; }
+          .marker-cluster div { background: transparent !important; border: none !important; box-shadow: none !important; }
+          .leaflet-interactive { pointer-events: auto !important; }
+          .map-compact .leaflet-top.leaflet-right { margin-top: 112px; }
+          .map-compact .info.legend { max-width: 190px; }
+        `}</style>
 
-          <MapContainer
-            center={position}
-            zoom={10}
-            minZoom={3}
-            scrollWheelZoom={true}
-            zoomControl={false}
-            style={{ height: "100%", width: "100%" }}
-          >
-            <TileLayer
-              attribution="Tiles &copy; Esri"
-              url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-            />
+        <MapContainer
+          center={position}
+          zoom={10}
+          minZoom={3}
+          scrollWheelZoom={true}
+          zoomControl={false}
+          style={{ height: "100%", width: "100%" }}
+        >
+          <TileLayer
+            attribution="Tiles &copy; Esri"
+            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+          />
 
-            <ZamboangaMask
-              onBoundaryLoaded={handleBoundaryLoaded}
-              onBarangaysLoaded={handleBarangaysLoaded}
-              rasterActive={hasQGISLayersActive}
-              fsiVisible={fsiVisible}
-              mapMode={mapMode}
-              selectedBarangayName={selectedBarangay?.name || null}
-              fsiModel={fsiModel}
-            />
+          <MapResizer />
 
-            <POILayer
-              onFacilities={setFacilities}
-              hiddenFacilities={effectiveHiddenFacilities}
-              visible={facilitiesVisible}
-            />
-            <EvacuationCentersLayer
-              onCentersLoaded={setEvacuationCenters}
-              visible={showEvacCenters}
-            />
+          <ZamboangaMask
+            onBoundaryLoaded={handleBoundaryLoaded}
+            onBarangaysLoaded={handleBarangaysLoaded}
+            rasterActive={hasQGISLayersActive}
+            fsiVisible={fsiVisible}
+            mapMode={mapMode}
+            selectedBarangayName={selectedBarangay?.name || null}
+            fsiModel={fsiModel}
+          />
 
-            <QGISLayers
-              activeLayers={activeQGISLayers}
-              cityBoundary={cityBoundary}
-              onLoadingChange={handleQGISLoadingChange}
-              onLoadError={handleQGISLoadError}
-              onRasterLoaded={handleRasterLoaded}
-            />
+          <POILayer
+            onFacilities={setFacilities}
+            hiddenFacilities={effectiveHiddenFacilities}
+            visible={facilitiesVisible}
+          />
+          <EvacuationCentersLayer
+            onCentersLoaded={setEvacuationCenters}
+            visible={showEvacCenters}
+          />
 
-            <QGISHoverTooltip rasterDataRef={qgisRasterDataRef} />
-
-            <RoutingLayer
-              facilities={facilities}
-              evacuationCenters={evacuationCenters}
-              onSelectionChange={handleSelectionChange}
-              onRequestLocation={handleRequestLocation}
-              onRequestReset={handleRequestReset}
-              onRequestSearchSelect={handleRequestSearchSelect}
-              onRequestClear={handleRequestClear}
-              onRequestCenter={handleRequestCenter}
-              selectedTypes={selectedTypes}
-              cityBoundary={cityBoundary}
-              barangayData={barangayData}
-              onNearestFacilitiesFound={handleNearestFacilitiesFound}
-              onClearHighlight={handleClearHighlight}
-              onLocationChange={handleLocationChange}
-              mapMode={mapMode}
-              onBarangaySelect={handleBarangaySelect}
-            />
-
-            <MapControls
-              onLocate={handleLocate}
-              onClear={handleClear}
-              onCenterLocation={handleCenter}
-              hasLocation={hasLocation}
-            />
-
-            <LegendControl
-              fsiVisible={fsiVisible}
-              onToggleFsi={handleToggleFsi}
-              fsiModel={fsiModel}
-              onModelChange={handleModelChange}
-              availableModels={availableModels}
-            />
-          </MapContainer>
-
-          <QGISLayerControl
-            onLayerToggle={handleLayerToggle}
+          <QGISLayers
             activeLayers={activeQGISLayers}
-            layerErrors={qgisLayerErrors}
-            layerLoading={qgisLayerLoading}
-          />
-
-          <QGISLegend
-            layerKey={activeLayerKey}
-            config={activeLayerKey ? QGIS_LAYER_CONFIGS[activeLayerKey] : null}
-            stats={activeLayerKey ? qgisLayerStats[activeLayerKey] : null}
-          />
-
-          <MapModeControl mode={mapMode} onModeChange={handleModeChange} />
-
-          <MapSearchControl
             cityBoundary={cityBoundary}
-            onSelectLocation={handleSearchSelect}
+            onLoadingChange={handleQGISLoadingChange}
+            onLoadError={handleQGISLoadError}
+            onRasterLoaded={handleRasterLoaded}
           />
-        </div>
-      </div>
 
-      <div className="w-1/4 h-full bg-background p-6 overflow-y-auto border-l">
-        <FacilityDetailsPanel
-          selection={selection}
-          onUseMyLocation={handleUseMyLocationClick}
-          facilityTypes={facilityTypes}
-          selectedTypes={selectedTypes}
-          onSelectAllTypes={handleSelectAllTypes}
-          onToggleType={handleToggleType}
-          mapMode={mapMode}
-          selectedBarangay={selectedBarangay}
-          onClearBarangay={handleClearBarangay}
-          facilitiesVisible={facilitiesVisible}
-          onToggleFacilitiesVisibility={handleToggleFacilitiesVisibility}
-          fsiModel={fsiModel}
+          <QGISHoverTooltip rasterDataRef={qgisRasterDataRef} />
+
+          <RoutingLayer
+            facilities={facilities}
+            evacuationCenters={evacuationCenters}
+            onSelectionChange={handleSelectionChange}
+            onRequestLocation={handleRequestLocation}
+            onRequestReset={handleRequestReset}
+            onRequestSearchSelect={handleRequestSearchSelect}
+            onRequestClear={handleRequestClear}
+            onRequestCenter={handleRequestCenter}
+            selectedTypes={selectedTypes}
+            cityBoundary={cityBoundary}
+            barangayData={barangayData}
+            onNearestFacilitiesFound={handleNearestFacilitiesFound}
+            onClearHighlight={handleClearHighlight}
+            onLocationChange={handleLocationChange}
+            mapMode={mapMode}
+            onBarangaySelect={handleBarangaySelect}
+          />
+
+          <MapControls
+            onLocate={handleLocate}
+            onClear={handleClear}
+            onCenterLocation={handleCenter}
+            hasLocation={hasLocation}
+          />
+
+          <LegendControl
+            fsiVisible={fsiVisible}
+            onToggleFsi={handleToggleFsi}
+            fsiModel={fsiModel}
+            onModelChange={handleModelChange}
+            availableModels={availableModels}
+          />
+        </MapContainer>
+
+        <Button
+          type="button"
+          variant="secondary"
+          size="icon"
+          onClick={handleToggleSidebar}
+          aria-label={sidebarOpenNow ? "Close sidebar" : "Open sidebar"}
+          aria-expanded={sidebarOpenNow}
+          aria-controls="flood-map-sidebar"
+          title={sidebarOpenNow ? "Close sidebar" : "Open sidebar"}
+          className="absolute top-4 right-4 z-[2000] h-10 w-10 shadow-md bg-white/85 backdrop-blur hover:bg-white"
+        >
+          {isDesktop ? (
+            sidebarOpen ? (
+              <PanelRightClose className="h-5 w-5" />
+            ) : (
+              <PanelRightOpen className="h-5 w-5" />
+            )
+          ) : (
+            <Menu className="h-5 w-5" />
+          )}
+        </Button>
+
+        <QGISLayerControl
+          onLayerToggle={handleLayerToggle}
+          activeLayers={activeQGISLayers}
+          layerErrors={qgisLayerErrors}
+          layerLoading={qgisLayerLoading}
+          compact={compact}
+        />
+
+        <QGISLegend
+          layerKey={activeLayerKey}
+          config={activeLayerKey ? QGIS_LAYER_CONFIGS[activeLayerKey] : null}
+          stats={activeLayerKey ? qgisLayerStats[activeLayerKey] : null}
+          compact={compact}
+        />
+
+        <MapModeControl
+          mode={mapMode}
+          onModeChange={handleModeChange}
+          compact={compact}
+        />
+
+        <MapSearchControl
+          cityBoundary={cityBoundary}
+          onSelectLocation={handleSearchSelect}
         />
       </div>
+
+      {isDesktop && (
+        <aside
+          id="flood-map-sidebar"
+          aria-hidden={!sidebarOpen}
+          className={cn(
+            "h-full shrink-0 overflow-hidden bg-background",
+            sidebarOpen ? "w-[360px] xl:w-[420px] border-l" : "w-0",
+          )}
+          style={{
+            visibility: sidebarOpen ? "visible" : "hidden",
+            transition: `width 300ms ease-in-out, visibility 0s linear ${
+              sidebarOpen ? "0ms" : "300ms"
+            }`,
+          }}
+        >
+          <div className="h-full w-[360px] xl:w-[420px] overflow-y-auto p-6">
+            {sidebarContent}
+          </div>
+        </aside>
+      )}
+
+      {/* Mobile drawer — slides from the BOTTOM */}
+      {!isDesktop && (
+        <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
+          <SheetContent
+            id="flood-map-sidebar"
+            side="bottom"
+            className="flex flex-col gap-0 p-0 max-h-[85dvh] sm:max-h-[80dvh] rounded-t-2xl"
+          >
+            {/* Drag handle indicator */}
+            <div className="pt-2 pb-1 flex justify-center">
+              <div className="h-1.5 w-12 rounded-full bg-muted-foreground/30" />
+            </div>
+            <SheetHeader className="border-b px-4 pb-3 pt-1 text-left">
+              <SheetTitle>
+                {mapMode === "barangay"
+                  ? "Barangay Details"
+                  : "Nearby Facilities"}
+              </SheetTitle>
+              <SheetDescription>
+                {mapMode === "barangay"
+                  ? "Flood susceptibility and population."
+                  : "Find the nearest health facilities and evacuation centers."}
+              </SheetDescription>
+            </SheetHeader>
+            <div className="flex-1 overflow-y-auto p-4">{sidebarContent}</div>
+          </SheetContent>
+        </Sheet>
+      )}
 
       <AlertDialog
         open={selection.outsideBoundary}
