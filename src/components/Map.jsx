@@ -65,9 +65,6 @@ console.log(
 
 // ==========================================
 // LEGEND THEME (single source of truth for ALL legend cards)
-// Every legend (FSI + raster layers) is built from these tokens, so width,
-// padding, header, row spacing and typography are identical everywhere.
-// All sizes are numbers in px unless noted.
 // ==========================================
 const LEGEND_THEME = {
   desktop: {
@@ -79,12 +76,12 @@ const LEGEND_THEME = {
     swatchSize: 16,
     swatchGap: 8,
     rowGap: 6,
-    headerHeight: 30, // min header height (incl. padding + divider)
+    headerHeight: 30,
     headerPad: 8,
     headerGap: 8,
     marginTop: 56,
     marginRight: 16,
-    stackGap: 12, // vertical gap between stacked legend cards
+    stackGap: 12,
     boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
   },
   mobile: {
@@ -107,13 +104,10 @@ const LEGEND_THEME = {
 };
 
 const px = (n) => `${n}px`;
-
-// Height of the collapsed (peeking) mobile drawer handle
 const PEEK_HEIGHT = 52;
 const getLegendTheme = (compact) =>
   LEGEND_THEME[compact ? "mobile" : "desktop"];
 
-// Card container
 const legendBaseStyle = (t) => ({
   boxSizing: "border-box",
   width: px(t.width),
@@ -132,7 +126,6 @@ const legendBaseStyle = (t) => ({
   userSelect: "none",
 });
 
-// Header row (title + optional control) with divider
 const legendHeaderStyle = (t) => ({
   boxSizing: "border-box",
   display: "flex",
@@ -153,7 +146,6 @@ const legendTitleStyle = (t) => ({
   lineHeight: "1.25",
 });
 
-// Rows container + row + swatch + label
 const legendBodyStyle = (t) => ({
   display: "flex",
   flexDirection: "column",
@@ -184,24 +176,23 @@ const legendLabelStyle = (t) => ({
   fontVariantNumeric: "tabular-nums",
 });
 
-// Estimated card height (used to stack the raster legend under the FSI legend)
 const estimateLegendHeight = (t, rows) =>
   2 * t.pad +
-  2 + // card border
+  2 +
   t.headerHeight +
   t.headerGap +
   rows * t.swatchSize +
   Math.max(0, rows - 1) * t.rowGap;
 
 // ==========================================
-// FACTOR INFO MAP
+// FACTOR INFO MAP (Human-readable names)
 // ==========================================
 const FACTOR_INFO = {
-  dem: { label: "Elevation", desc: "Ground height above sea level" },
-  slope: { label: "Slope", desc: "Steepness of the terrain" },
-  aspect: { label: "Aspect", desc: "Direction the slope faces" },
+  dem: { label: "Surface Elevation", desc: "Ground height above sea level" },
+  slope: { label: "Terrain Slope", desc: "Steepness of the terrain" },
+  aspect: { label: "Slope Direction", desc: "Direction the slope faces" },
   twi: {
-    label: "Wetness Index",
+    label: "Topographic Wetness",
     desc: "Tendency of terrain to accumulate water",
   },
   hand: {
@@ -213,7 +204,7 @@ const FACTOR_INFO = {
     desc: "Volume of water flowing through the area",
   },
   distance_to_river: {
-    label: "Distance to River",
+    label: "River Distance",
     desc: "How far the point is from the nearest river",
   },
   drainage_density: {
@@ -222,116 +213,77 @@ const FACTOR_INFO = {
   },
   chirps: { label: "CHIRPS Rainfall", desc: "Satellite rainfall estimate" },
   gpm: { label: "GPM Rainfall", desc: "Global precipitation measurement" },
-  rainfall_intensity: {
-    label: "Rainfall Intensity",
-    desc: "Combined rainfall from CHIRPS + GPM",
+  wetness_index: {
+    label: "Terrain Wetness Index",
+    desc: "Wetness weighted by water flow",
   },
-  rainfall_ratio: {
-    label: "Rainfall Ratio",
-    desc: "Balance between the two rainfall sources",
-  },
-  rainfall_wetness: {
-    label: "Rainfall × Wetness",
-    desc: "Rainfall combined with terrain wetness",
-  },
-  rainfall_flow: {
-    label: "Rainfall × Flow",
-    desc: "Rainfall combined with flow accumulation",
-  },
-  wetness_index: { label: "Wetness Index", desc: "TWI weighted by water flow" },
   flood_concentration: {
     label: "Flood Concentration",
     desc: "Runoff accumulated near rivers",
   },
   twi_hand_ratio: {
-    label: "Wetness / HAND",
+    label: "Wetness-to-Drainage Ratio",
     desc: "Ratio of wetness to elevation above drainage",
   },
-  twi_hand: {
-    label: "Wetness × HAND",
-    desc: "Interaction between wetness and HAND",
+  northness: {
+    label: "North-Facing Slope",
+    desc: "How much the slope faces north",
   },
-  twi_slope_ratio: {
-    label: "Wetness / Slope",
-    desc: "Wetness relative to terrain steepness",
+  eastness: {
+    label: "East-Facing Slope",
+    desc: "How much the slope faces east",
   },
-  hand_dem_ratio: {
-    label: "HAND / Elevation",
-    desc: "Low-lying areas relative to total elevation",
-  },
-  dem_river_ratio: {
-    label: "Elevation / River Dist",
-    desc: "Height relative to river proximity",
-  },
-  flow_dist_ratio: {
-    label: "Flow / River Dist",
-    desc: "Water flow relative to distance from river",
-  },
-  northness: { label: "Northness", desc: "How much the slope faces north" },
-  eastness: { label: "Eastness", desc: "How much the slope faces east" },
   relative_elevation: {
-    label: "Relative Elevation",
-    desc: "HAND divided by overall elevation",
+    label: "Relative Terrain Height",
+    desc: "Low-lying areas relative to overall elevation",
   },
   slope_aspect: {
-    label: "Slope × Aspect",
+    label: "Slope Orientation",
     desc: "Combined effect of steepness and direction",
-  },
-  hand_squared: {
-    label: "HAND²",
-    desc: "Nonlinear HAND effect (amplifies extremes)",
   },
   river_proximity: {
     label: "River Proximity",
     desc: "Inverse distance to river (higher = closer)",
   },
   floodplain_index: {
-    label: "Floodplain Index",
+    label: "Floodplain Susceptibility",
     desc: "Flat, low areas near water",
   },
-  flood_susceptibility_index: {
-    label: "Susceptibility Index",
-    desc: "Composite of wetness, proximity, rainfall",
+  rainfall_intensity: {
+    label: "Rainfall Intensity",
+    desc: "Combined rainfall from CHIRPS + GPM",
   },
-  dist_center_norm: {
-    label: "Distance from Center",
-    desc: "Distance to map center (sampling artifact)",
+  rainfall_ratio: {
+    label: "Rainfall Source Ratio",
+    desc: "Balance between the two rainfall sources",
   },
-  drainage_capacity: {
-    label: "Drainage Capacity",
-    desc: "Slope relative to drainage density",
+  rainfall_wetness: {
+    label: "Rain-Coupled Wetness",
+    desc: "Rainfall interacting with terrain wetness",
   },
-  saturation_index: {
-    label: "Saturation Index",
-    desc: "HAND relative to flow accumulation",
+  rainfall_flow: {
+    label: "Rain-Driven Runoff",
+    desc: "Rainfall combined with flow accumulation",
   },
-  terrain_roughness: {
-    label: "Terrain Roughness",
-    desc: "Slope combined with aspect variation",
+  twi_hand: {
+    label: "Combined Terrain Wetness",
+    desc: "Interaction between wetness and elevation",
   },
-  flash_flood_potential: {
-    label: "Flash Flood Potential",
-    desc: "Steep slope × heavy rain",
+  dem_river_ratio: {
+    label: "Elevation-to-River Proximity",
+    desc: "Height relative to river distance",
   },
-  water_logging_potential: {
-    label: "Water Logging",
-    desc: "Flat areas with high wetness",
+  hand_dem_ratio: {
+    label: "Lowland Relative Elevation",
+    desc: "Low-lying areas relative to total elevation",
   },
-  slope_flow: {
-    label: "Slope × Flow",
-    desc: "Steepness combined with water flow",
+  flow_dist_ratio: {
+    label: "Flow-to-River Distance",
+    desc: "Water flow relative to distance from river",
   },
-  dist_slope: {
-    label: "Distance × Slope",
-    desc: "River distance combined with steepness",
-  },
-  drainage_rainfall: {
-    label: "Drainage × Rain",
-    desc: "Stream density combined with rainfall",
-  },
-  river_influence: {
-    label: "River Influence",
-    desc: "Distance × drainage density",
+  hand_squared: {
+    label: "Extreme Lowland Indicator",
+    desc: "Nonlinear elevation effect amplifying extreme lows",
   },
 };
 
@@ -493,9 +445,6 @@ function buildLegendStops(colorScale, minVal, maxVal) {
   });
 }
 
-// ==========================================
-// QGIS LAYER CONFIGS
-// ==========================================
 const QGIS_LAYER_CONFIGS = {
   dem: {
     name: "Digital Elevation Model",
@@ -614,9 +563,8 @@ async function fetchRoadRoute(origin, dest) {
   const url = `${OSRM_BASE}/route/v1/driving/${origin[1]},${origin[0]};${dest[1]},${dest[0]}?overview=full&geometries=geojson`;
   const res = await fetch(url);
   const data = await res.json();
-  if (data.code !== "Ok" || !data.routes?.length) {
+  if (data.code !== "Ok" || !data.routes?.length)
     throw new Error(data.message || "Route request failed");
-  }
   return data.routes[0];
 }
 
@@ -699,9 +647,8 @@ async function fetchZamboangaMaritimeBoundary() {
         parsed?.fetchedAt &&
         Date.now() - parsed.fetchedAt < MARITIME_BOUNDARY_CACHE_MS &&
         parsed.geojson
-      ) {
+      )
         return parsed.geojson;
-      }
     }
   } catch {}
 
@@ -720,7 +667,6 @@ async function fetchZamboangaMaritimeBoundary() {
     if (!res.ok) throw new Error(`Overpass request failed: ${res.status}`);
     const data = await res.json();
     const ways = data.elements || [];
-
     const seaWays = ways.filter(
       (w) =>
         w.type === "way" &&
@@ -728,7 +674,6 @@ async function fetchZamboangaMaritimeBoundary() {
         w.geometry.length > 1 &&
         w.tags?.natural !== "coastline",
     );
-
     const geojson = {
       type: "FeatureCollection",
       features: seaWays.map((w) => ({
@@ -740,14 +685,12 @@ async function fetchZamboangaMaritimeBoundary() {
         },
       })),
     };
-
     try {
       localStorage.setItem(
         MARITIME_BOUNDARY_CACHE_KEY,
         JSON.stringify({ fetchedAt: Date.now(), geojson }),
       );
     } catch {}
-
     return geojson;
   } catch (err) {
     console.warn("Maritime boundary load failed:", err.message);
@@ -773,26 +716,19 @@ async function reverseGeocode(lat, lng) {
   return data.display_name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
 }
 
-// ==========================================
-// FSI SERVER HELPERS
-// ==========================================
-
 function getFeatureCentroid(feature) {
   const geom = feature?.geometry;
   if (!geom) return null;
-
   let coords;
-  if (geom.type === "Polygon") {
-    coords = geom.coordinates[0];
-  } else if (geom.type === "MultiPolygon") {
-    let largest = null;
-    let largestArea = -1;
+  if (geom.type === "Polygon") coords = geom.coordinates[0];
+  else if (geom.type === "MultiPolygon") {
+    let largest = null,
+      largestArea = -1;
     for (const poly of geom.coordinates) {
       const ring = poly[0];
       let area = 0;
-      for (let i = 0; i < ring.length - 1; i++) {
+      for (let i = 0; i < ring.length - 1; i++)
         area += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
-      }
       area = Math.abs(area) / 2;
       if (area > largestArea) {
         largestArea = area;
@@ -800,9 +736,7 @@ function getFeatureCentroid(feature) {
       }
     }
     coords = largest;
-  } else {
-    return null;
-  }
+  } else return null;
 
   if (!coords || coords.length === 0) return null;
   const isClosed =
@@ -811,9 +745,8 @@ function getFeatureCentroid(feature) {
     coords[0][1] === coords[coords.length - 1][1];
   const n = isClosed ? coords.length - 1 : coords.length;
   if (n <= 0) return null;
-
-  let sumLng = 0;
-  let sumLat = 0;
+  let sumLng = 0,
+    sumLat = 0;
   for (let i = 0; i < n; i++) {
     sumLng += coords[i][0];
     sumLat += coords[i][1];
@@ -830,12 +763,7 @@ async function fetchServerFsiPoint(
   const res = await fetch(`${API_BASE_URL}/api/predict/point`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      lat,
-      lng,
-      model,
-      explain,
-    }),
+    body: JSON.stringify({ lat, lng, model, explain }),
   });
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
@@ -852,11 +780,7 @@ async function fetchServerFsiBatch(points, model = DEFAULT_FSI_MODEL) {
   const res = await fetch(`${API_BASE_URL}/api/predict/batch`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      explain: false,
-      points,
-    }),
+    body: JSON.stringify({ model, explain: false, points }),
   });
   if (!res.ok) throw new Error(`Batch failed: HTTP ${res.status}`);
   return res.json();
@@ -864,7 +788,6 @@ async function fetchServerFsiBatch(points, model = DEFAULT_FSI_MODEL) {
 
 async function resolveBarangayFsi(features, model = DEFAULT_FSI_MODEL) {
   const result = new Map();
-
   if (!USE_SERVER) {
     for (const f of features) {
       const name = f.properties?.adm4_name || "";
@@ -877,9 +800,8 @@ async function resolveBarangayFsi(features, model = DEFAULT_FSI_MODEL) {
     }
     return result;
   }
-
-  const order = [];
-  const points = [];
+  const order = [],
+    points = [];
   for (const f of features) {
     const name = f.properties?.adm4_name || "";
     const centroid = getFeatureCentroid(f);
@@ -895,9 +817,7 @@ async function resolveBarangayFsi(features, model = DEFAULT_FSI_MODEL) {
     order.push({ name, lat: centroid.lat, lng: centroid.lng, centroid });
     points.push({ lat: centroid.lat, lng: centroid.lng });
   }
-
   if (points.length === 0) return result;
-
   const t0 = performance.now();
   try {
     const data = await fetchServerFsiBatch(points, model);
@@ -907,16 +827,16 @@ async function resolveBarangayFsi(features, model = DEFAULT_FSI_MODEL) {
       `[FSI][${model}] Batch: ${results.length}/${points.length} in ${dt}ms`,
     );
     for (let i = 0; i < order.length; i++) {
-      const r = results[i];
-      const o = order[i];
-      if (r && !r.error && typeof r.probability === "number") {
+      const r = results[i],
+        o = order[i];
+      if (r && !r.error && typeof r.probability === "number")
         result.set(o.name, {
           risk: r.risk_class || "Low Risk",
           probability: r.probability,
           centroid: o.centroid,
           top_factors: [],
         });
-      } else {
+      else
         result.set(o.name, {
           risk: "Low Risk",
           probability: null,
@@ -924,22 +844,19 @@ async function resolveBarangayFsi(features, model = DEFAULT_FSI_MODEL) {
           top_factors: [],
           error: r?.error || "no result",
         });
-      }
     }
   } catch (err) {
     console.warn(
       `[FSI][${model}] Batch failed (${err.message}); falling back to random`,
     );
-    for (const o of order) {
+    for (const o of order)
       result.set(o.name, {
         risk: getRandomRiskLevel(),
         probability: null,
         centroid: o.centroid,
         top_factors: [],
       });
-    }
   }
-
   return result;
 }
 
@@ -947,20 +864,16 @@ function useBarangayExplanation(barangay, model) {
   const [factors, setFactors] = useState(barangay?.top_factors || []);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-
   useEffect(() => {
     setFactors(barangay?.top_factors || []);
     setError(null);
-
-    if (!USE_SERVER) return;
-    if (!barangay) return;
     if (
+      !USE_SERVER ||
+      !barangay ||
       typeof barangay?.lat !== "number" ||
       typeof barangay?.lng !== "number"
-    ) {
+    )
       return;
-    }
-
     let cancelled = false;
     setLoading(true);
     fetchServerFsiPoint(barangay.lat, barangay.lng, model, { explain: true })
@@ -973,18 +886,12 @@ function useBarangayExplanation(barangay, model) {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-
     return () => {
       cancelled = true;
     };
   }, [barangay, model]);
-
   return { factors, loading, error };
 }
-
-// ==========================================
-// RESPONSIVE HELPERS
-// ==========================================
 
 function useMediaQuery(query) {
   const [matches, setMatches] = useState(
@@ -998,6 +905,18 @@ function useMediaQuery(query) {
     return () => mq.removeEventListener("change", handler);
   }, [query]);
   return matches;
+}
+
+function CustomPanes() {
+  const map = useMap();
+  useEffect(() => {
+    // Ensure the facilities pane exists and sits above the FSI (640) and QGIS (600) panes
+    if (!map.getPane("facilities-pane")) {
+      const pane = map.createPane("facilities-pane");
+      pane.style.zIndex = 650;
+    }
+  }, [map]);
+  return null;
 }
 
 function MapResizer() {
@@ -1018,9 +937,6 @@ function MapResizer() {
   return null;
 }
 
-// ==========================================
-// FSI LEGEND (built from the shared legend theme helpers)
-// ==========================================
 function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
   const map = useMap();
   const divRef = useRef(null);
@@ -1063,7 +979,6 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
     div.style.marginRight = px(t.marginRight);
     div.innerHTML = "";
 
-    // ----- Header: title + ON/OFF toggle -----
     const header = document.createElement("div");
     Object.assign(header.style, legendHeaderStyle(t));
     header.style.alignItems = "center";
@@ -1097,7 +1012,6 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
     header.appendChild(toggleBtn);
     div.appendChild(header);
 
-    // ----- Risk rows -----
     const body = document.createElement("div");
     Object.assign(body.style, legendBodyStyle(t));
 
@@ -1124,13 +1038,8 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
   return null;
 }
 
-// ==========================================
-// MAP CONTROLS
-// ==========================================
-
 function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
   const map = useMap();
-
   useEffect(() => {
     const control = L.control({ position: "bottomright" });
     control.onAdd = () => {
@@ -1207,12 +1116,7 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
       const makeZoom = (svg, title, fn) => {
         const b = document.createElement("button");
         b.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" style="pointer-events:none;">${svg}</svg>`;
-        b.style.cssText = `
-          background: none; border: none; padding: 6px 10px;
-          display: flex; align-items: center; justify-content: center;
-          transition: background 0.2s; width: 100%; cursor: pointer;
-          border-bottom: 1px solid #e0e0e0;
-        `;
+        b.style.cssText = `background: none; border: none; padding: 6px 10px; display: flex; align-items: center; justify-content: center; transition: background 0.2s; width: 100%; cursor: pointer; border-bottom: 1px solid #e0e0e0;`;
         b.title = title;
         b.addEventListener("mouseenter", () => {
           b.style.backgroundColor = "#f0f0f0";
@@ -1247,13 +1151,11 @@ function MapControls({ onLocate, onClear, hasLocation, onCenterLocation }) {
       zoomControl.remove();
     };
   }, [map, onLocate, onClear, hasLocation, onCenterLocation]);
-
   return null;
 }
 
 function MapModeControl({ mode, onModeChange, compact = false }) {
   const containerRef = useRef(null);
-
   useEffect(() => {
     if (!containerRef.current) return;
     L.DomEvent.disableClickPropagation(containerRef.current);
@@ -1351,9 +1253,8 @@ function MapSearchControl({ cityBoundary, onSelectLocation, compact = false }) {
   }, []);
   useEffect(() => {
     const onOut = (e) => {
-      if (containerRef.current && !containerRef.current.contains(e.target)) {
+      if (containerRef.current && !containerRef.current.contains(e.target))
         setShowResults(false);
-      }
     };
     document.addEventListener("click", onOut);
     return () => document.removeEventListener("click", onOut);
@@ -1373,10 +1274,7 @@ function MapSearchControl({ cityBoundary, onSelectLocation, compact = false }) {
       const viewbox = bbox
         ? `${bbox[0]},${bbox[3]},${bbox[2]},${bbox[1]}`
         : DEFAULT_VIEWBOX;
-      const url =
-        `${NOMINATIM_BASE}/search?format=json&limit=6&countrycodes=ph` +
-        `&viewbox=${viewbox}&bounded=1` +
-        `&q=${encodeURIComponent(`${q}, Zamboanga City, Philippines`)}`;
+      const url = `${NOMINATIM_BASE}/search?format=json&limit=6&countrycodes=ph&viewbox=${viewbox}&bounded=1&q=${encodeURIComponent(`${q}, Zamboanga City, Philippines`)}`;
       const res = await fetch(url, { headers: { "Accept-Language": "en" } });
       const data = await res.json();
       setResults(data || []);
@@ -1490,10 +1388,6 @@ function MapSearchControl({ cityBoundary, onSelectLocation, compact = false }) {
   );
 }
 
-// ==========================================
-// POI + EVAC LAYERS
-// ==========================================
-
 const TYPE_ICONS = {
   Pharmacy: "💊",
   Hospital: "🏥",
@@ -1550,7 +1444,6 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
       const visibleRows = rows.filter(
         (r) => !hiddenIds.has(`${r.lat},${r.lon}`),
       );
-
       if (clusterRef.current) {
         map.removeLayer(clusterRef.current);
         clusterRef.current = null;
@@ -1559,7 +1452,6 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
         setLoading(false);
         return;
       }
-
       const shouldCluster = zoomLevel < 13;
 
       if (shouldCluster) {
@@ -1567,18 +1459,16 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
           maxClusterRadius: 40,
           iconCreateFunction: function (cluster) {
             const emoji = getDominantEmoji(cluster.getAllChildMarkers());
-            const size = 36;
             const div = document.createElement("div");
-            div.style.cssText = `width:${size}px;height:${size}px;display:flex;align-items:center;justify-content:center;font-size:24px;text-shadow:0 0 4px rgba(255,255,255,0.8);`;
+            div.style.cssText = `width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-size:24px;text-shadow:0 0 4px rgba(255,255,255,0.8);`;
             div.innerHTML = emoji;
             return L.divIcon({
               html: div.outerHTML,
-              iconSize: [size, size],
+              iconSize: [36, 36],
               className: "custom-cluster-icon",
             });
           },
         });
-
         const markers = visibleRows.map((row) => {
           const emoji = TYPE_ICONS[row.type] || DEFAULT_MARKER_EMOJI;
           const icon = L.divIcon({
@@ -1586,18 +1476,11 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
             iconSize: [24, 24],
             className: "custom-poi-marker",
           });
-          const popup = `
-          <div style="min-width: 150px;">
-            <strong>${row.name}</strong><br>
-            Type: ${row.type}<br>
-            ${row.addr_street ? `Address: ${row.addr_street}<br>` : ""}
-            ${row.addr_city ? `City: ${row.addr_city}<br>` : ""}
-            ${row.phone ? `Phone: ${row.phone}<br>` : ""}
-            ${row.website ? `Website: <a href="${row.website}" target="_blank">link</a>` : ""}
-          </div>`;
+          const popup = `<div style="min-width: 150px;"><strong>${row.name}</strong><br>Type: ${row.type}<br>${row.addr_street ? `Address: ${row.addr_street}<br>` : ""}${row.addr_city ? `City: ${row.addr_city}<br>` : ""}${row.phone ? `Phone: ${row.phone}<br>` : ""}${row.website ? `Website: <a href="${row.website}" target="_blank">link</a>` : ""}</div>`;
           return L.marker([row.lat, row.lon], {
             icon,
             facilityType: row.type,
+            pane: "facilities-pane",
           }).bindPopup(popup);
         });
         cg.addLayers(markers);
@@ -1612,19 +1495,12 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
             iconSize: [24, 24],
             className: "custom-poi-marker",
           });
-          const popup = `
-          <div style="min-width: 150px;">
-            <strong>${row.name}</strong><br>
-            Type: ${row.type}<br>
-            ${row.addr_street ? `Address: ${row.addr_street}<br>` : ""}
-            ${row.addr_city ? `City: ${row.addr_city}<br>` : ""}
-            ${row.phone ? `Phone: ${row.phone}<br>` : ""}
-            ${row.website ? `Website: <a href="${row.website}" target="_blank">link</a>` : ""}
-          </div>`;
+          const popup = `<div style="min-width: 150px;"><strong>${row.name}</strong><br>Type: ${row.type}<br>${row.addr_street ? `Address: ${row.addr_street}<br>` : ""}${row.addr_city ? `City: ${row.addr_city}<br>` : ""}${row.phone ? `Phone: ${row.phone}<br>` : ""}${row.website ? `Website: <a href="${row.website}" target="_blank">link</a>` : ""}</div>`;
           group.addLayer(
             L.marker([row.lat, row.lon], {
               icon,
               facilityType: row.type,
+              pane: "facilities-pane",
             }).bindPopup(popup),
           );
         });
@@ -1687,9 +1563,8 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
   }, [map]);
 
   useEffect(() => {
-    if (allFacilitiesRef.current.length > 0) {
+    if (allFacilitiesRef.current.length > 0)
       renderFacilities(allFacilitiesRef.current, currentZoom);
-    }
   }, [currentZoom, hiddenFacilities, renderFacilities, renderTick]);
 
   return null;
@@ -1719,17 +1594,8 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
     return () => map.off("zoomend", h);
   }, [map]);
 
-  const popupHtml = (row) => `
-    <div style="min-width: 210px; font-family: Arial, sans-serif; font-size: 12px; line-height: 1.5;">
-      <strong style="font-size: 13px;">${row.name}</strong><br>
-      <span style="color:#555;">District: ${row.district || "N/A"}</span><br>
-      ${row.location ? `Location: ${row.location}<br>` : ""}
-      ${row.proximity ? `Proximity: ${row.proximity}<br>` : ""}
-      ${row.floor_area_sqm != null ? `Floor area: ${row.floor_area_sqm} sqm<br>` : ""}
-      ${row.remarks ? `<em style="color:#b00020;">${row.remarks}</em><br>` : ""}
-      <span style="font-size:10px; color:#999;">Center No. ${row.center_no}</span>
-    </div>`;
-
+  const popupHtml = (row) =>
+    `<div style="min-width: 210px; font-family: Arial, sans-serif; font-size: 12px; line-height: 1.5;"><strong style="font-size: 13px;">${row.name}</strong><br><span style="color:#555;">District: ${row.district || "N/A"}</span><br>${row.location ? `Location: ${row.location}<br>` : ""}${row.proximity ? `Proximity: ${row.proximity}<br>` : ""}${row.floor_area_sqm != null ? `Floor area: ${row.floor_area_sqm} sqm<br>` : ""}${row.remarks ? `<em style="color:#b00020;">${row.remarks}</em><br>` : ""}<span style="font-size:10px; color:#999;">Center No. ${row.center_no}</span></div>`;
   const markerIcon = () =>
     L.divIcon({
       html: `<div style="font-size:22px;line-height:22px;text-shadow:0 0 3px #fff,0 0 2px #fff;">⛺</div>`,
@@ -1769,13 +1635,7 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
             const count = cluster.getChildCount();
             const size = 34 + Math.min(20, count);
             const div = document.createElement("div");
-            div.style.cssText = `
-              width:${size}px;height:${size}px;
-              display:flex;align-items:center;justify-content:center;
-              background:#d32f2f;color:#fff;font-weight:bold;
-              font-family:Arial,sans-serif;font-size:13px;
-              border-radius:50%;border:2px solid #fff;
-              box-shadow:0 1px 4px rgba(0,0,0,0.4);`;
+            div.style.cssText = `width:${size}px;height:${size}px;display:flex;align-items:center;justify-content:center;background:#d32f2f;color:#fff;font-weight:bold;font-family:Arial,sans-serif;font-size:13px;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);`;
             div.innerHTML = `⛺<span style="font-size:11px;margin-left:2px;">${count}</span>`;
             return L.divIcon({
               html: div.outerHTML,
@@ -1785,7 +1645,10 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
           },
         });
         valid.forEach((row) => {
-          L.marker([row.latitude, row.longitude], { icon: markerIcon() })
+          L.marker([row.latitude, row.longitude], {
+            icon: markerIcon(),
+            pane: "facilities-pane",
+          })
             .bindPopup(popupHtml(row))
             .addTo(cg);
         });
@@ -1794,7 +1657,10 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
       } else {
         const group = L.layerGroup();
         valid.forEach((row) => {
-          L.marker([row.latitude, row.longitude], { icon: markerIcon() })
+          L.marker([row.latitude, row.longitude], {
+            icon: markerIcon(),
+            pane: "facilities-pane",
+          })
             .bindPopup(popupHtml(row))
             .addTo(group);
         });
@@ -1846,9 +1712,8 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
   }, [map]);
 
   useEffect(() => {
-    if (allCentersRef.current.length > 0) {
+    if (allCentersRef.current.length > 0)
       render(allCentersRef.current, currentZoom);
-    }
   }, [currentZoom, render, renderTick]);
 
   return null;
@@ -1918,7 +1783,6 @@ function RoutingLayer({
   const originBarangay = origin
     ? findBarangayForPoint(origin, barangayData)
     : null;
-
   const mapModeRef = useRef(mapMode);
   useEffect(() => {
     mapModeRef.current = mapMode;
@@ -1950,7 +1814,6 @@ function RoutingLayer({
     originBarangay,
     onSelectionChange,
   ]);
-
   useEffect(() => {
     onLocationChange?.(origin);
   }, [origin, onLocationChange]);
@@ -1972,30 +1835,25 @@ function RoutingLayer({
         const evacAsFacility = (evacuationCenters || [])
           .map(evacCenterToFacility)
           .filter((f) => Number.isFinite(f.lat) && Number.isFinite(f.lon));
-
         const active = selectedTypes || [];
         const healthTypes = active.filter((t) => t !== EVACUATION_CENTER_TYPE);
         const evacSelected = active.includes(EVACUATION_CENTER_TYPE);
-
         let filtered;
-        if (active.length === 0) {
+        if (active.length === 0)
           filtered = [...(facilities || []), ...evacAsFacility];
-        } else {
+        else {
           const parts = [];
-          if (healthTypes.length > 0) {
+          if (healthTypes.length > 0)
             parts.push(
               ...(facilities || []).filter((f) => healthTypes.includes(f.type)),
             );
-          }
           if (evacSelected) parts.push(...evacAsFacility);
           filtered = parts;
         }
-
         if (filtered.length === 0) {
           const names = active.length === 0 ? "facilities" : active.join(", ");
           throw new Error(`No matching ${names} available`);
         }
-
         const oc = [latlng.lat, latlng.lng];
         const cands = kNearestByHaversine(oc, filtered, 15);
         const ranked = await fetchRoadDistances(oc, cands);
@@ -2092,16 +1950,15 @@ function RoutingLayer({
       },
       (err) => {
         let msg = err.message;
-        if (err.code === 1) {
+        if (err.code === 1)
           msg =
             "Location permission was denied. You can still click the map directly to find the nearest facility.";
-        } else if (err.code === 2) {
+        else if (err.code === 2)
           msg =
             "Your location couldn't be determined. Check that Location Services are enabled for your browser, or click the map directly instead.";
-        } else if (err.code === 3) {
+        else if (err.code === 3)
           msg =
             "Location request timed out. Try again, or click the map directly.";
-        }
         setErrorMsg(msg);
         setMode("error");
         onClearHighlight?.();
@@ -2111,7 +1968,6 @@ function RoutingLayer({
   }, [handleNewOrigin, onClearHighlight]);
 
   const resetOutsideBoundary = useCallback(() => setOutsideBoundary(false), []);
-
   useEffect(() => {
     onRequestLocation?.(handleUseMyLocation);
   }, [handleUseMyLocation, onRequestLocation]);
@@ -2131,7 +1987,6 @@ function RoutingLayer({
   const includesEvac =
     selectedTypes.length === 0 ||
     selectedTypes.includes(EVACUATION_CENTER_TYPE);
-
   useEffect(() => {
     if (!origin) return;
     if (includesEvac && evacuationCenters.length === 0) return;
@@ -2156,6 +2011,7 @@ function RoutingLayer({
         iconSize: [26, 26],
         className: "custom-poi-marker",
       }),
+      pane: "facilities-pane",
     }).addTo(group);
     const bounds = L.latLngBounds(
       [origin.lat, origin.lng],
@@ -2172,31 +2028,29 @@ function RoutingLayer({
           iconSize: [24, 24],
           className: "custom-poi-marker",
         }),
+        pane: "facilities-pane",
       })
         .bindPopup(
           `<strong>#${i + 1} ${item.facility.name}</strong><br>${(item.distanceMeters / 1000).toFixed(2)} km, ${Math.round(item.durationSeconds / 60)} min`,
         )
         .addTo(group);
-      if (item.routeGeoJSON) {
+      if (item.routeGeoJSON)
         L.geoJSON(item.routeGeoJSON, {
           style: { color, weight: 5, opacity: 0.9 },
         }).addTo(group);
-      }
     });
 
     group.addTo(map);
     layerRef.current = group;
 
-    if (results.length > 0) {
+    if (results.length > 0)
       map.fitBounds(bounds, {
         padding: [50, 50],
         maxZoom: 15,
         animate: true,
         duration: 0.5,
       });
-    } else {
-      map.setView([origin.lat, origin.lng], 14);
-    }
+    else map.setView([origin.lat, origin.lng], 14);
 
     return () => {
       if (layerRef.current) map.removeLayer(layerRef.current);
@@ -2276,10 +2130,8 @@ function ZamboangaMask({
       fetchZamboangaMaritimeBoundary(),
     ]).then(([cityData, barangayData, popMap, maritime]) => {
       if (cancelled) return;
-
       const feature = cityData.features[0];
       onBoundaryLoaded?.(feature);
-
       const geom = feature.geometry;
       const rings =
         geom.type === "MultiPolygon"
@@ -2306,8 +2158,7 @@ function ZamboangaMask({
         style: { color: "#e8401c", weight: 2.5, opacity: 1, fill: false },
         interactive: false,
       }).addTo(map);
-
-      if (maritime?.features?.length) {
+      if (maritime?.features?.length)
         maritimeLayerRef.current = L.geoJSON(maritime, {
           style: {
             color: "#3388ff",
@@ -2317,7 +2168,6 @@ function ZamboangaMask({
           },
           interactive: false,
         }).addTo(map);
-      }
 
       barangayDataRef.current = barangayData;
       popMapRef.current = popMap;
@@ -2345,7 +2195,6 @@ function ZamboangaMask({
 
       const barangayData = barangayDataRef.current;
       const popMap = popMapRef.current;
-
       const fsiMap = await resolveBarangayFsi(barangayData.features, fsiModel);
       if (cancelled) return;
 
@@ -2373,18 +2222,15 @@ function ZamboangaMask({
           },
         };
       });
-      if (unmatched > 0) {
+      if (unmatched > 0)
         console.warn(
           `Population data: ${unmatched} barangay(s) unmatched in PSA spreadsheet.`,
         );
-      }
 
       const updated = { ...barangayData, features: featuresWithRisk };
       onBarangaysLoaded?.(updated);
 
-      if (barangayLayerRef.current) {
-        map.removeLayer(barangayLayerRef.current);
-      }
+      if (barangayLayerRef.current) map.removeLayer(barangayLayerRef.current);
       barangayLayersByNameRef.current = {};
       prevSelectedRef.current = null;
 
@@ -2433,28 +2279,18 @@ function ZamboangaMask({
 
           ly.on("mouseover", function () {
             const show = fsiVisibleRef.current;
-
             if (mapModeRef.current === "barangay") {
-              if (prevSelectedRef.current !== this && show) {
+              if (prevSelectedRef.current !== this && show)
                 this.setStyle({ fillOpacity: FSI_OPACITY.hover, weight: 2 });
-              } else {
-                this.setStyle({ weight: 2 });
-              }
+              else this.setStyle({ weight: 2 });
             } else {
-              if (show) {
+              if (show)
                 this.setStyle({ fillOpacity: FSI_OPACITY.hover, weight: 2 });
-              } else {
-                this.setStyle({ weight: 2, fillOpacity: 0, opacity: 0 });
-              }
+              else this.setStyle({ weight: 2, fillOpacity: 0, opacity: 0 });
             }
-
             if (show) {
-              if (
-                activeTooltipRef.current &&
-                activeTooltipRef.current !== this
-              ) {
+              if (activeTooltipRef.current && activeTooltipRef.current !== this)
                 activeTooltipRef.current.closeTooltip();
-              }
               this.openTooltip();
               activeTooltipRef.current = this;
             }
@@ -2463,7 +2299,6 @@ function ZamboangaMask({
           ly.on("mouseout", function () {
             const show = fsiVisibleRef.current;
             const r = this.feature?.properties?.fsi_risk || "Low Risk";
-
             if (prevSelectedRef.current !== this) {
               this.setStyle({
                 fillColor: show
@@ -2475,7 +2310,6 @@ function ZamboangaMask({
                 opacity: getBaseBorder(),
               });
             }
-
             if (activeTooltipRef.current === this) {
               this.closeTooltip();
               activeTooltipRef.current = null;
@@ -2536,22 +2370,17 @@ function ZamboangaMask({
     });
     if (layer.bringToFront) layer.bringToFront();
     prevSelectedRef.current = layer;
-    if (layer.getBounds) {
+    if (layer.getBounds)
       map.fitBounds(layer.getBounds(), {
         padding: [40, 40],
         maxZoom: 14,
         animate: true,
         duration: 0.5,
       });
-    }
   }, [selectedBarangayName, fsiVisible, map]);
 
   return null;
 }
-
-// ==========================================
-// QGIS LAYERS
-// ==========================================
 
 function QGISLayerControl({
   onLayerToggle,
@@ -2569,11 +2398,8 @@ function QGISLayerControl({
     L.DomEvent.disableScrollPropagation(containerRef.current);
   }, []);
 
-  // On compact screens, leave room for the legend column on the right
   const mobileTheme = LEGEND_THEME.mobile;
-  const compactMaxWidth = `calc(100% - ${
-    mobileTheme.width + mobileTheme.marginRight + 16 + 8
-  }px)`;
+  const compactMaxWidth = `calc(100% - ${mobileTheme.width + mobileTheme.marginRight + 16 + 8}px)`;
 
   return (
     <div
@@ -2596,8 +2422,7 @@ function QGISLayerControl({
         onClick={() => setIsOpen(!isOpen)}
       >
         <span className="text-xs font-medium text-gray-700 flex items-center gap-1.5">
-          <span>🗺️</span>
-          Layers
+          <span>🗺️</span> Layers
           {activeLayers.length > 0 && (
             <span className="text-[10px] bg-gray-100 text-gray-600 rounded-full px-1.5 py-0.5 ml-0.5">
               {activeLayers.length}
@@ -2653,11 +2478,6 @@ function QGISLayerControl({
   );
 }
 
-// ==========================================
-// QGIS LEGEND (built from the shared legend theme helpers)
-// Same card, header, rows and typography as the FSI legend.
-// Desktop: stacked directly under the FSI legend. Mobile: bottom-left.
-// ==========================================
 function QGISLegend({
   layerKey,
   config,
@@ -2684,12 +2504,9 @@ function QGISLegend({
       className="absolute z-[1000]"
       style={{ ...position, ...legendBaseStyle(t) }}
     >
-      {/* Header */}
       <div style={legendHeaderStyle(t)}>
         <div style={legendTitleStyle(t)}>{config.name}</div>
       </div>
-
-      {/* Stop rows */}
       <div style={legendBodyStyle(t)}>
         {stops.map((s, i) => (
           <div key={i} style={legendRowStyle(t)}>
@@ -2763,9 +2580,7 @@ function QGISRasterLayer({
         attemptedRef.current = true;
 
         const res = await fetch(config.path, { signal: controller.signal });
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
         const buf = await res.arrayBuffer();
         if (cancelled) return;
 
@@ -2780,9 +2595,8 @@ function QGISRasterLayer({
         let noDataValue = null;
         try {
           const nd = image.getGDALNoData ? image.getGDALNoData() : null;
-          if (nd !== null && nd !== undefined && !Number.isNaN(Number(nd))) {
+          if (nd !== null && nd !== undefined && !Number.isNaN(Number(nd)))
             noDataValue = Number(nd);
-          }
         } catch {}
 
         const canvas = document.createElement("canvas");
@@ -2790,10 +2604,9 @@ function QGISRasterLayer({
         canvas.height = height;
         const ctx = canvas.getContext("2d");
         const img = ctx.createImageData(width, height);
-
         const values = data[0];
-        let minVal = Infinity;
-        let maxVal = -Infinity;
+        let minVal = Infinity,
+          maxVal = -Infinity;
         for (let i = 0; i < values.length; i++) {
           if (noDataValue != null && values[i] === noDataValue) continue;
           if (values[i] < minVal) minVal = values[i];
@@ -2875,7 +2688,6 @@ function QGISRasterLayer({
           minVal,
           maxVal,
         });
-
         map.fitBounds(
           [
             [bl.lat, bl.lng],
@@ -2915,16 +2727,10 @@ function QGISRasterLayer({
 
 function QGISHoverTooltip({ rasterDataRef }) {
   const map = useMap();
-
   useEffect(() => {
     const container = map.getContainer();
     const tooltipEl = document.createElement("div");
-    tooltipEl.style.cssText = `
-      position: absolute; z-index: 1000; pointer-events: none;
-      background: rgba(0,0,0,0.78); color: #fff; font-size: 11px;
-      font-family: Arial, sans-serif; padding: 6px 9px; border-radius: 4px;
-      line-height: 1.5; display: none; white-space: nowrap;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.3);`;
+    tooltipEl.style.cssText = `position: absolute; z-index: 1000; pointer-events: none; background: rgba(0,0,0,0.78); color: #fff; font-size: 11px; font-family: Arial, sans-serif; padding: 6px 9px; border-radius: 4px; line-height: 1.5; display: none; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,0.3);`;
     container.appendChild(tooltipEl);
 
     const fmt = (v) => {
@@ -2974,7 +2780,6 @@ function QGISHoverTooltip({ rasterDataRef }) {
       if (tooltipEl.parentNode) tooltipEl.parentNode.removeChild(tooltipEl);
     };
   }, [map, rasterDataRef]);
-
   return null;
 }
 
@@ -3093,25 +2898,19 @@ function QGISLayers({
   );
 }
 
-// ==========================================
-// SIDE-PANEL COMPONENTS
-// ==========================================
-
 function FactorsList({ factors, loading, error }) {
-  if (loading) {
+  if (loading)
     return (
       <div className="text-xs text-muted-foreground italic">
         Computing top factors…
       </div>
     );
-  }
-  if (error) {
+  if (error)
     return (
       <div className="text-xs text-red-500">
         Factor breakdown unavailable: {error}
       </div>
     );
-  }
   if (!factors || factors.length === 0) return null;
 
   const maxAbs = Math.max(
@@ -3126,7 +2925,6 @@ function FactorsList({ factors, loading, error }) {
           Top Contributing Factors
         </div>
       </div>
-
       <div className="rounded-md bg-muted/40 p-2 text-[11px] text-muted-foreground leading-relaxed">
         Each factor below shows how much it pushed <em>this barangay's</em>{" "}
         flood probability.
@@ -3143,7 +2941,6 @@ function FactorsList({ factors, loading, error }) {
           </span>
         </div>
       </div>
-
       {factors.map((f, i) => {
         const info = getFactorInfo(f.feature);
         const pct = (Math.abs(f.contribution) / maxAbs) * 100;
@@ -3152,7 +2949,7 @@ function FactorsList({ factors, loading, error }) {
         return (
           <div key={i} className="text-xs">
             <div className="flex justify-between items-baseline mb-0.5 gap-2">
-              <span className="font-medium truncate" title={f.feature}>
+              <span className="font-medium truncate" title={info.label}>
                 {info.label}
               </span>
               <span
@@ -3259,7 +3056,6 @@ function FacilityDetailsPanel({
   onToggleFacilitiesVisibility,
 }) {
   const { mode, results, errorMsg, origin, originBarangay } = selection;
-
   return (
     <div className="space-y-4">
       {mapMode === "barangay" ? (
@@ -3298,7 +3094,6 @@ function FacilityDetailsPanel({
               </>
             )}
           </Button>
-
           {facilityTypes.length > 0 && (
             <Card>
               <CardContent className="p-3">
@@ -3355,7 +3150,6 @@ function FacilityDetailsPanel({
               </CardContent>
             </Card>
           )}
-
           {mode === "idle" && (
             <Card className="border-dashed bg-muted/50">
               <CardContent className="p-4 text-center text-sm text-muted-foreground">
@@ -3365,9 +3159,7 @@ function FacilityDetailsPanel({
               </CardContent>
             </Card>
           )}
-
           {mode === "loading" && <SkeletonFacilityDetails />}
-
           {mode === "error" && (
             <Card className="border-destructive/50 bg-destructive/5">
               <CardContent className="p-4 text-sm text-destructive">
@@ -3375,7 +3167,6 @@ function FacilityDetailsPanel({
               </CardContent>
             </Card>
           )}
-
           {mode === "done" && results.length > 0 && (
             <div className="space-y-4">
               <FsiNotice originBarangay={originBarangay} />
@@ -3620,10 +3411,6 @@ function FacilityCard({ item, rank }) {
   );
 }
 
-// ==========================================
-// MAIN COMPONENT
-// ==========================================
-
 function FloodMap() {
   const position = [7.0736, 122.01];
   const [facilities, setFacilities] = useState([]);
@@ -3678,9 +3465,8 @@ function FloodMap() {
   }, [isDesktop]);
 
   useEffect(() => {
-    if (!isDesktop && (selection.mode === "done" || selectedBarangay)) {
+    if (!isDesktop && (selection.mode === "done" || selectedBarangay))
       setDrawerOpen(true);
-    }
   }, [isDesktop, selection.mode, selectedBarangay]);
 
   const searchSelectRef = useRef(null);
@@ -3727,6 +3513,7 @@ function FloodMap() {
     },
     [facilities],
   );
+
   const handleClearHighlight = useCallback(() => setHiddenFacilities([]), []);
   const handleLocationChange = useCallback((loc) => setHasLocation(!!loc), []);
 
@@ -3805,6 +3592,7 @@ function FloodMap() {
     setMapMode(newMode);
     if (newMode === "marker") setSelectedBarangay(null);
   }, []);
+
   const handleBarangaySelect = useCallback((b) => setSelectedBarangay(b), []);
   const handleClearBarangay = useCallback(() => setSelectedBarangay(null), []);
   const handleSelectAllTypes = useCallback(() => setSelectedTypes([]), []);
@@ -3825,9 +3613,8 @@ function FloodMap() {
         (t) => t !== EVACUATION_CENTER_TYPE,
       );
       facilities.forEach((f) => {
-        if (healthTypes.length === 0 || !healthTypes.includes(f.type)) {
+        if (healthTypes.length === 0 || !healthTypes.includes(f.type))
           hidden.add(`${f.lat},${f.lon}`);
-        }
       });
     }
     hiddenFacilities.forEach((f) => hidden.add(`${f.lat},${f.lon}`));
@@ -3869,33 +3656,21 @@ function FloodMap() {
         )}
       >
         <style>{`
-          .barangay-label {
-            background: rgba(0,0,0,0.75);
-            border: none; border-radius: 4px; color: #ffffff;
-            font-size: 11px; font-weight: 500; padding: 3px 7px;
-            white-space: nowrap;
-          }
+          .barangay-label { background: rgba(0,0,0,0.75); border: none; border-radius: 4px; color: #ffffff; font-size: 11px; font-weight: 500; padding: 3px 7px; white-space: nowrap; }
           .barangay-label::before { display: none; }
           .custom-poi-icon { background: none; border: none; }
           .search-item:last-child { border-bottom: none; }
           .search-item:hover { background: #f2f2f2; }
           .leaflet-tooltip { pointer-events: none !important; }
-          .leaflet-control-container .leaflet-bottom .leaflet-right {
-            display: flex !important; flex-direction: row !important;
-            gap: 8px !important; margin-bottom: 20px !important;
-          }
-          .leaflet-control-container .leaflet-bottom .leaflet-right .leaflet-control {
-            margin: 0 !important;
-          }
+          .leaflet-control-container .leaflet-bottom .leaflet-right { display: flex !important; flex-direction: row !important; gap: 8px !important; margin-bottom: 20px !important; }
+          .leaflet-control-container .leaflet-bottom .leaflet-right .leaflet-control { margin: 0 !important; }
           .custom-cluster-icon { background: transparent !important; border: none !important; }
           .custom-cluster-icon div { background: transparent !important; border: none !important; }
           .marker-cluster { background: transparent !important; border: none !important; box-shadow: none !important; }
           .marker-cluster div { background: transparent !important; border: none !important; box-shadow: none !important; }
           .leaflet-interactive { pointer-events: auto !important; }
           .info.legend { margin-bottom: 0; }
-          .has-peek .leaflet-control-container .leaflet-bottom .leaflet-right {
-            margin-bottom: ${PEEK_HEIGHT + 20}px !important;
-          }
+          .has-peek .leaflet-control-container .leaflet-bottom .leaflet-right { margin-bottom: ${PEEK_HEIGHT + 20}px !important; }
         `}</style>
 
         <MapContainer
@@ -3910,9 +3685,8 @@ function FloodMap() {
             attribution="Tiles &copy; Esri"
             url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
           />
-
+          <CustomPanes />
           <MapResizer />
-
           <ZamboangaMask
             onBoundaryLoaded={handleBoundaryLoaded}
             onBarangaysLoaded={handleBarangaysLoaded}
@@ -3922,7 +3696,6 @@ function FloodMap() {
             selectedBarangayName={selectedBarangay?.name || null}
             fsiModel={DEFAULT_FSI_MODEL}
           />
-
           <POILayer
             onFacilities={setFacilities}
             hiddenFacilities={effectiveHiddenFacilities}
@@ -3932,7 +3705,6 @@ function FloodMap() {
             onCentersLoaded={setEvacuationCenters}
             visible={showEvacCenters}
           />
-
           <QGISLayers
             activeLayers={activeQGISLayers}
             cityBoundary={cityBoundary}
@@ -3940,9 +3712,7 @@ function FloodMap() {
             onLoadError={handleQGISLoadError}
             onRasterLoaded={handleRasterLoaded}
           />
-
           <QGISHoverTooltip rasterDataRef={qgisRasterDataRef} />
-
           <RoutingLayer
             facilities={facilities}
             evacuationCenters={evacuationCenters}
@@ -3961,14 +3731,12 @@ function FloodMap() {
             mapMode={mapMode}
             onBarangaySelect={handleBarangaySelect}
           />
-
           <MapControls
             onLocate={handleLocate}
             onClear={handleClear}
             onCenterLocation={handleCenter}
             hasLocation={hasLocation}
           />
-
           <LegendControl
             fsiVisible={fsiVisible}
             onToggleFsi={handleToggleFsi}
@@ -3996,7 +3764,6 @@ function FloodMap() {
           </Button>
         )}
 
-        {/* Mobile: peeking top edge of the drawer; tap to slide it up */}
         {showPeek && (
           <button
             type="button"
@@ -4024,7 +3791,6 @@ function FloodMap() {
           layerLoading={qgisLayerLoading}
           compact={compact}
         />
-
         <QGISLegend
           layerKey={activeLayerKey}
           config={activeLayerKey ? QGIS_LAYER_CONFIGS[activeLayerKey] : null}
@@ -4032,13 +3798,11 @@ function FloodMap() {
           compact={compact}
           bottomOffset={showPeek ? PEEK_HEIGHT : 0}
         />
-
         <MapModeControl
           mode={mapMode}
           onModeChange={handleModeChange}
           compact={compact}
         />
-
         <MapSearchControl
           cityBoundary={cityBoundary}
           onSelectLocation={handleSearchSelect}
@@ -4056,9 +3820,7 @@ function FloodMap() {
           )}
           style={{
             visibility: sidebarOpen ? "visible" : "hidden",
-            transition: `width 300ms ease-in-out, visibility 0s linear ${
-              sidebarOpen ? "0ms" : "300ms"
-            }`,
+            transition: `width 300ms ease-in-out, visibility 0s linear ${sidebarOpen ? "0ms" : "300ms"}`,
           }}
         >
           <div className="h-full w-[360px] xl:w-[420px] overflow-y-auto p-6">
