@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import BaseLayerSwitcher, { BASE_LAYERS } from "./BaseLayerSwitcher";
 import { supabase } from "../lib/supabaseClient";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
@@ -2382,102 +2383,6 @@ function ZamboangaMask({
   return null;
 }
 
-function QGISLayerControl({
-  onLayerToggle,
-  activeLayers,
-  layerErrors,
-  layerLoading,
-  compact = false,
-}) {
-  const [isOpen, setIsOpen] = useState(!compact);
-  const containerRef = useRef(null);
-
-  useEffect(() => {
-    if (!containerRef.current) return;
-    L.DomEvent.disableClickPropagation(containerRef.current);
-    L.DomEvent.disableScrollPropagation(containerRef.current);
-  }, []);
-
-  const mobileTheme = LEGEND_THEME.mobile;
-  const compactMaxWidth = `calc(100% - ${mobileTheme.width + mobileTheme.marginRight + 16 + 8}px)`;
-
-  return (
-    <div
-      ref={containerRef}
-      className="absolute z-[1000] min-w-[160px] max-w-[220px]"
-      style={{
-        top: compact ? "112px" : "112px",
-        left: "16px",
-        ...(compact ? { maxWidth: compactMaxWidth } : {}),
-        backgroundColor: "rgba(255,255,255,0.92)",
-        backdropFilter: "blur(6px)",
-        borderRadius: "8px",
-        boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
-        padding: "6px 0",
-        border: "1px solid rgba(0,0,0,0.05)",
-      }}
-    >
-      <div
-        className="flex items-center justify-between px-3 py-1.5 cursor-pointer"
-        onClick={() => setIsOpen(!isOpen)}
-      >
-        <span className="text-xs font-medium text-gray-700 flex items-center gap-1.5">
-          <span>🗺️</span> Layers
-          {activeLayers.length > 0 && (
-            <span className="text-[10px] bg-gray-100 text-gray-600 rounded-full px-1.5 py-0.5 ml-0.5">
-              {activeLayers.length}
-            </span>
-          )}
-        </span>
-        <span className="text-gray-400 text-xs">{isOpen ? "▾" : "▸"}</span>
-      </div>
-      {isOpen && (
-        <div className="px-1.5 py-1 space-y-0.5 max-h-[320px] overflow-y-auto">
-          {Object.entries(QGIS_LAYER_CONFIGS).map(([key, config]) => {
-            const active = activeLayers.includes(key);
-            const loading = !!layerLoading?.[key];
-            const err = layerErrors?.[key];
-            return (
-              <div key={key}>
-                <div
-                  className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-all hover:bg-gray-50 ${active ? "bg-gray-50/80" : ""}`}
-                  onClick={() => onLayerToggle(key)}
-                  title={err || config.description}
-                >
-                  <div
-                    className="w-2.5 h-2.5 rounded-full flex-shrink-0 transition-all"
-                    style={{
-                      backgroundColor: err
-                        ? "#e53935"
-                        : active
-                          ? config.previewColor
-                          : "#e0e0e0",
-                      boxShadow: active
-                        ? `0 0 0 2px ${config.previewColor}33`
-                        : "none",
-                    }}
-                  />
-                  <span className="text-[11px] text-gray-700 flex-1 truncate">
-                    {config.name}
-                  </span>
-                  <span className="text-[9px] text-gray-400">
-                    {loading ? "⏳" : err ? "⚠️" : active ? "●" : "○"}
-                  </span>
-                </div>
-                {err && (
-                  <div className="px-2 pb-1 text-[9px] text-red-500 leading-tight">
-                    {err}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function QGISLegend({
   layerKey,
   config,
@@ -2529,6 +2434,7 @@ function QGISRasterLayer({
   onLoadingChange,
   onLoadError,
   onRasterLoaded,
+  onProgress,
 }) {
   const map = useMap();
   const layerRef = useRef(null);
@@ -2558,6 +2464,7 @@ function QGISRasterLayer({
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
+    const tick = () => new Promise((r) => setTimeout(r, 0));
 
     const load = async () => {
       if (!isActive || !mountedRef.current) {
@@ -2577,13 +2484,44 @@ function QGISRasterLayer({
       try {
         onLoadingChange?.(layerKey, true);
         onLoadError?.(layerKey, null);
+        onProgress?.(layerKey, 0);
         attemptedRef.current = true;
 
+        // ---- Download (0–70%) ----
         const res = await fetch(config.path, { signal: controller.signal });
         if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        const buf = await res.arrayBuffer();
-        if (cancelled) return;
 
+        const total = Number(res.headers.get("content-length")) || 0;
+        let buf;
+        if (res.body && total > 0) {
+          const reader = res.body.getReader();
+          const chunks = [];
+          let received = 0;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            received += value.length;
+            onProgress?.(
+              layerKey,
+              Math.min(70, Math.round((received / total) * 70)),
+            );
+          }
+          const merged = new Uint8Array(received);
+          let off = 0;
+          for (const c of chunks) {
+            merged.set(c, off);
+            off += c.length;
+          }
+          buf = merged.buffer;
+        } else {
+          buf = await res.arrayBuffer();
+        }
+        if (cancelled) return;
+        onProgress?.(layerKey, 72);
+        await tick();
+
+        // ---- Decode (72–85%) ----
         const tiff = await geotiff.fromArrayBuffer(buf);
         const image = await tiff.getImage();
         const bbox = image.getBoundingBox();
@@ -2591,6 +2529,8 @@ function QGISRasterLayer({
         const height = image.getHeight();
         const data = await image.readRasters();
         if (cancelled) return;
+        onProgress?.(layerKey, 85);
+        await tick();
 
         let noDataValue = null;
         try {
@@ -2613,7 +2553,10 @@ function QGISRasterLayer({
           if (values[i] > maxVal) maxVal = values[i];
         }
         const range = maxVal - minVal;
+        onProgress?.(layerKey, 90);
+        await tick();
 
+        // ---- Colorize (90–95%) ----
         for (let i = 0; i < values.length; i++) {
           const idx = i * 4;
           if (noDataValue != null && values[i] === noDataValue) {
@@ -2628,7 +2571,11 @@ function QGISRasterLayer({
           img.data[idx + 3] = 255;
         }
         ctx.putImageData(img, 0, 0);
+        if (cancelled) return;
+        onProgress?.(layerKey, 95);
+        await tick();
 
+        // ---- Clip + overlay (95–99%) ----
         let outCanvas = canvas;
         const rings = getClipRingsFromBoundary(
           boundaryRef.current,
@@ -2657,6 +2604,8 @@ function QGISRasterLayer({
         }
 
         const dataUrl = outCanvas.toDataURL("image/png");
+        onProgress?.(layerKey, 99);
+
         const [west, south, east, north] = bbox;
         const bl = utmToLatLng(west, south);
         const tr = utmToLatLng(east, north);
@@ -2688,6 +2637,7 @@ function QGISRasterLayer({
           minVal,
           maxVal,
         });
+        onProgress?.(layerKey, 100);
         map.fitBounds(
           [
             [bl.lat, bl.lng],
@@ -2720,7 +2670,15 @@ function QGISRasterLayer({
       onLoadingChange?.(layerKey, false);
       attemptedRef.current = false;
     };
-  }, [map, layerKey, isActive, onLoadingChange, onLoadError, onRasterLoaded]);
+  }, [
+    map,
+    layerKey,
+    isActive,
+    onLoadingChange,
+    onLoadError,
+    onRasterLoaded,
+    onProgress,
+  ]);
 
   return null;
 }
@@ -2880,6 +2838,7 @@ function QGISLayers({
   onLoadingChange,
   onLoadError,
   onRasterLoaded,
+  onProgress,
 }) {
   return (
     <>
@@ -2892,6 +2851,7 @@ function QGISLayers({
           onLoadingChange={onLoadingChange}
           onLoadError={onLoadError}
           onRasterLoaded={onRasterLoaded}
+          onProgress={onProgress}
         />
       ))}
     </>
@@ -3424,6 +3384,7 @@ function FloodMap() {
   const [qgisLayerLoading, setQgisLayerLoading] = useState({});
   const [qgisLayerStats, setQgisLayerStats] = useState({});
   const [fsiVisible, setFsiVisible] = useState(true);
+  const [baseLayer, setBaseLayer] = useState("satellite");
 
   const [selection, setSelection] = useState({
     mode: "idle",
@@ -3448,6 +3409,23 @@ function FloodMap() {
     typeof window !== "undefined" ? window.innerWidth : 1200,
   );
   const compact = mapWidth < 900;
+
+  const [qgisLayerProgress, setQgisLayerProgress] = useState({});
+
+  const handleQGISProgress = useCallback((key, pct) => {
+    setQgisLayerProgress((p) => ({ ...p, [key]: pct }));
+  }, []);
+
+  const handleQGISLoadingChange = useCallback((key, loading) => {
+    setQgisLayerLoading((p) => ({ ...p, [key]: loading }));
+    if (!loading) {
+      setQgisLayerProgress((p) => {
+        const n = { ...p };
+        delete n[key];
+        return n;
+      });
+    }
+  }, []);
 
   useEffect(() => {
     const el = mapAreaRef.current;
@@ -3539,9 +3517,6 @@ function FloodMap() {
     setActiveQGISLayers((prev) => (prev.includes(key) ? [] : [key]));
   }, []);
 
-  const handleQGISLoadingChange = useCallback((key, loading) => {
-    setQgisLayerLoading((p) => ({ ...p, [key]: loading }));
-  }, []);
   const handleQGISLoadError = useCallback((key, msg) => {
     setQgisLayerErrors((p) => {
       const n = { ...p };
@@ -3682,8 +3657,9 @@ function FloodMap() {
           style={{ height: "100%", width: "100%" }}
         >
           <TileLayer
-            attribution="Tiles &copy; Esri"
-            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            key={baseLayer}
+            attribution={BASE_LAYERS[baseLayer].attribution}
+            url={BASE_LAYERS[baseLayer].url}
           />
           <CustomPanes />
           <MapResizer />
@@ -3711,6 +3687,7 @@ function FloodMap() {
             onLoadingChange={handleQGISLoadingChange}
             onLoadError={handleQGISLoadError}
             onRasterLoaded={handleRasterLoaded}
+            onProgress={handleQGISProgress}
           />
           <QGISHoverTooltip rasterDataRef={qgisRasterDataRef} />
           <RoutingLayer
@@ -3783,20 +3760,12 @@ function FloodMap() {
             </span>
           </button>
         )}
-
-        <QGISLayerControl
-          onLayerToggle={handleLayerToggle}
-          activeLayers={activeQGISLayers}
-          layerErrors={qgisLayerErrors}
-          layerLoading={qgisLayerLoading}
-          compact={compact}
-        />
         <QGISLegend
           layerKey={activeLayerKey}
           config={activeLayerKey ? QGIS_LAYER_CONFIGS[activeLayerKey] : null}
           stats={activeLayerKey ? qgisLayerStats[activeLayerKey] : null}
           compact={compact}
-          bottomOffset={showPeek ? PEEK_HEIGHT : 0}
+          bottomOffset={(showPeek ? PEEK_HEIGHT : 0) + (compact ? 84 : 0)}
         />
         <MapModeControl
           mode={mapMode}
@@ -3807,6 +3776,18 @@ function FloodMap() {
           cityBoundary={cityBoundary}
           onSelectLocation={handleSearchSelect}
           compact={compact}
+        />
+        <BaseLayerSwitcher
+          baseLayer={baseLayer}
+          onBaseLayerChange={setBaseLayer}
+          layerConfigs={QGIS_LAYER_CONFIGS}
+          activeLayers={activeQGISLayers}
+          onLayerToggle={handleLayerToggle}
+          layerErrors={qgisLayerErrors}
+          layerLoading={qgisLayerLoading}
+          layerProgress={qgisLayerProgress}
+          compact={compact}
+          bottomOffset={showPeek ? PEEK_HEIGHT : 0}
         />
       </div>
 
