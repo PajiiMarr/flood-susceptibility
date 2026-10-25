@@ -1,4 +1,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import { createRoot } from "react-dom/client";
+import { Switch } from "@/components/ui/switch";
+import { useNavigate } from "react-router-dom";
 import { createPortal } from "react-dom";
 import BaseLayerSwitcher, { BASE_LAYERS } from "./BaseLayerSwitcher";
 import { supabase } from "../lib/supabaseClient";
@@ -48,6 +51,7 @@ import {
   Loader2,
   Hexagon,
   SlidersHorizontal,
+  Home,
 } from "lucide-react";
 
 export const EVACUATION_CENTER_TYPE = "Evacuation Center";
@@ -323,7 +327,7 @@ const FSI_OPACITY = {
   borderOpacity: 0.85,
 };
 
-const ROUTE_COLORS = ["#1a73e8", "#e68a00", "#c62828"];
+const ROUTE_COLORS = ["#2563eb", "#f59e0b", "#ef4444"]; // Updated to Tailwind colors
 
 const FSI_MESSAGES = {
   "Very High Risk":
@@ -963,6 +967,9 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
   const compactRef = useRef(compact);
   const [expanded, setExpanded] = useState(false);
 
+  const switchRootRef = useRef(null);
+  const switchContainerRef = useRef(null);
+
   useEffect(() => {
     toggleRef.current = onToggleFsi;
   }, [onToggleFsi]);
@@ -970,6 +977,7 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
     compactRef.current = compact;
   }, [compact]);
 
+  // 1. Create Leaflet control container
   useEffect(() => {
     const legend = L.control({ position: "topright" });
     legend.onAdd = () => {
@@ -987,14 +995,25 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
     return () => {
       legend.remove();
       divRef.current = null;
+      if (switchRootRef.current) {
+        switchRootRef.current.unmount();
+        switchRootRef.current = null;
+      }
     };
   }, [map]);
 
+  // 2. Build UI layout (only rebuild when structure changes)
   useEffect(() => {
     const div = divRef.current;
     if (!div) return;
     const t = getLegendTheme(compact);
     const collapsed = compact && !expanded;
+
+    if (switchRootRef.current) {
+      switchRootRef.current.unmount();
+      switchRootRef.current = null;
+    }
+    switchContainerRef.current = null;
 
     Object.assign(div.style, legendBaseStyle(t));
     div.style.marginTop = px(t.marginTop);
@@ -1020,7 +1039,7 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
           <span style="font-size:9px;color:#777;">▾</span>
         </div>`;
       div.onclick = (e) => {
-        L.DomEvent.stop(e); // the map must not see this click
+        L.DomEvent.stop(e);
         setExpanded(true);
       };
       return;
@@ -1039,28 +1058,22 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
     const actions = document.createElement("div");
     actions.style.cssText = "display:flex;align-items:center;gap:6px;";
 
-    const toggleBtn = document.createElement("button");
-    toggleBtn.type = "button";
-    toggleBtn.title = fsiVisible ? "Hide FSI layer" : "Show FSI layer";
-    toggleBtn.style.cssText = `
-      border: none;
-      background: ${fsiVisible ? "#1a73e8" : "#e0e0e0"};
-      color: ${fsiVisible ? "#fff" : "#555"};
-      font-size: ${compact ? "9px" : "10px"};
-      font-weight: 600;
-      padding: ${compact ? "2px 7px" : "3px 9px"};
-      border-radius: 10px;
-      cursor: pointer;
-      line-height: 1.2;
-      flex-shrink: 0;
-      transition: background 0.15s ease;
-    `;
-    toggleBtn.textContent = fsiVisible ? "ON" : "OFF";
-    toggleBtn.addEventListener("click", (e) => {
-      L.DomEvent.stop(e);
-      toggleRef.current?.();
-    });
-    actions.appendChild(toggleBtn);
+    // Switch Container
+    const toggleContainer = document.createElement("div");
+    toggleContainer.style.display = "flex";
+    toggleContainer.style.alignItems = "center";
+    toggleContainer.style.minWidth = compact ? "32px" : "40px";
+    toggleContainer.style.minHeight = compact ? "16px" : "20px";
+
+    // Prevent Leaflet from swallowing clicks
+    L.DomEvent.disableClickPropagation(toggleContainer);
+    L.DomEvent.disableScrollPropagation(toggleContainer);
+
+    switchContainerRef.current = toggleContainer;
+    actions.appendChild(toggleContainer);
+
+    // Initialize React Root ONCE for this layout
+    switchRootRef.current = createRoot(toggleContainer);
 
     if (compact) {
       const closeBtn = document.createElement("button");
@@ -1070,7 +1083,7 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
       closeBtn.style.cssText =
         "border:none;background:transparent;color:#666;font-size:12px;cursor:pointer;padding:2px 4px;line-height:1;";
       closeBtn.addEventListener("click", (e) => {
-        L.DomEvent.stop(e); // the map must not see this click
+        L.DomEvent.stop(e);
         setExpanded(false);
       });
       actions.appendChild(closeBtn);
@@ -1084,7 +1097,7 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
     for (const [level, color] of Object.entries(RISK_LEVELS)) {
       const row = document.createElement("div");
       Object.assign(row.style, legendRowStyle(t));
-      row.style.opacity = fsiVisible ? "1" : "0.4";
+      row.className = "legend-row"; // Add class for state updates
       row.style.transition = "opacity 0.15s ease";
 
       const swatch = document.createElement("div");
@@ -1099,7 +1112,36 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
       body.appendChild(row);
     }
     div.appendChild(body);
-  }, [fsiVisible, compact, expanded]);
+  }, [compact, expanded]); // Removed fsiVisible to prevent DOM rebuilds
+
+  // 3. Update visual state without destroying DOM (Fixes animation)
+  useEffect(() => {
+    // Update the React Switch (allows Shadcn's CSS transitions to work)
+    if (switchRootRef.current) {
+      switchRootRef.current.render(
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{ display: "flex", alignItems: "center" }}
+        >
+          <Switch
+            checked={fsiVisible}
+            onCheckedChange={() => toggleRef.current?.()}
+            className={cn(
+              "data-[state=checked]:bg-blue-600 data-[state=unchecked]:bg-slate-300 transition-colors",
+              compact ? "h-4 w-8" : "h-5 w-9",
+            )}
+          />
+        </div>,
+      );
+    }
+
+    // Update row opacity
+    if (divRef.current) {
+      divRef.current.querySelectorAll(".legend-row").forEach((row) => {
+        row.style.opacity = fsiVisible ? "1" : "0.4";
+      });
+    }
+  }, [fsiVisible, compact]);
 
   return null;
 }
@@ -1251,10 +1293,10 @@ function MapModeControl({ mode, onModeChange, compact = false }) {
   };
   const activeStyle = {
     ...baseBtnStyle,
-    backgroundColor: "#1a73e8",
+    backgroundColor: "#2563eb",
     color: "#ffffff",
     fontWeight: "600",
-    boxShadow: "0 1px 4px rgba(26,115,232,0.4)",
+    boxShadow: "0 1px 4px rgba(37,99,235,0.4)",
   };
   const inactiveStyle = {
     ...baseBtnStyle,
@@ -1320,7 +1362,12 @@ function MapModeControl({ mode, onModeChange, compact = false }) {
   );
 }
 
-function MapSearchControl({ cityBoundary, onSelectLocation, compact = false }) {
+function MapSearchControl({
+  cityBoundary,
+  onSelectLocation,
+  onHome,
+  compact = false,
+}) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [showResults, setShowResults] = useState(false);
@@ -1402,14 +1449,49 @@ function MapSearchControl({ cityBoundary, onSelectLocation, compact = false }) {
         top: compact ? "12px" : "16px",
         left: compact ? "12px" : "16px",
         zIndex: 2000,
-        width: compact ? "calc(100% - 24px)" : "320px",
-        maxWidth: compact ? "none" : "calc(100% - 32px)",
+        display: "flex",
+        gap: "8px",
+        alignItems: "stretch",
         pointerEvents: "auto",
+        width: compact ? "calc(100% - 24px)" : "380px",
+        maxWidth: compact ? "none" : "calc(100% - 32px)",
       }}
     >
+      {onHome && (
+        <button
+          onClick={onHome}
+          title="Back to Home"
+          style={{
+            background: "rgba(255,255,255,0.75)",
+            backdropFilter: "blur(12px)",
+            WebkitBackdropFilter: "blur(12px)",
+            borderRadius: "10px",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
+            border: "1px solid rgba(255,255,255,0.5)",
+            padding: "0 12px",
+            cursor: "pointer",
+            color: "#333",
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            transition: "background 0.2s",
+          }}
+          onMouseEnter={(e) =>
+            (e.currentTarget.style.background = "rgba(255,255,255,0.95)")
+          }
+          onMouseLeave={(e) =>
+            (e.currentTarget.style.background = "rgba(255,255,255,0.75)")
+          }
+        >
+          <Home size={18} />
+        </button>
+      )}
+
       <div
         style={{
           position: "relative",
+          flex: 1,
           background: "rgba(255,255,255,0.75)",
           backdropFilter: "blur(12px)",
           WebkitBackdropFilter: "blur(12px)",
@@ -2488,7 +2570,7 @@ function ZamboangaMask({
     const layer = barangayLayersByNameRef.current[selectedBarangayName];
     if (!layer) return;
     layer.setStyle({
-      color: "#1a73e8",
+      color: "#2563eb",
       weight: 3,
       opacity: fsiVisible ? 1 : 0,
       fillOpacity: fsiVisible ? FSI_OPACITY.selected : 0,
@@ -2546,9 +2628,9 @@ function FacilityTypeControl({
     cursor: "pointer",
     whiteSpace: "nowrap",
     flexShrink: 0,
-    backgroundColor: active ? "#1a73e8" : "rgba(0,0,0,0.05)",
+    backgroundColor: active ? "#2563eb" : "rgba(0,0,0,0.05)",
     color: active ? "#fff" : "#333",
-    boxShadow: active ? "0 1px 4px rgba(26,115,232,0.4)" : "none",
+    boxShadow: active ? "0 1px 4px rgba(37,99,235,0.4)" : "none",
     transition: "all 0.15s ease",
   });
 
@@ -3378,7 +3460,12 @@ function BarangayCard({ barangay, onClear }) {
             </div>
             <CardTitle className="text-base leading-tight">{name}</CardTitle>
           </div>
-          <Button variant="outline" size="sm" onClick={onClear}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onClear}
+            className="border-slate-300 text-slate-700 hover:bg-slate-100"
+          >
             Clear
           </Button>
         </div>
@@ -3440,8 +3527,8 @@ function FacilityDetailsPanel({
   if (mapMode === "none") {
     return (
       <div className="space-y-4">
-        <Card className="border-dashed bg-muted/50">
-          <CardContent className="p-4 text-center text-sm text-muted-foreground">
+        <Card className="border-dashed border-slate-300 bg-slate-50">
+          <CardContent className="p-4 text-center text-sm text-slate-600">
             No mode selected. Choose <strong>Marker</strong> or{" "}
             <strong>Barangay</strong> mode on the map to start.
           </CardContent>
@@ -3460,8 +3547,8 @@ function FacilityDetailsPanel({
               onClear={onClearBarangay}
             />
           ) : (
-            <Card className="border-dashed bg-muted/50">
-              <CardContent className="p-4 text-center text-sm text-muted-foreground">
+            <Card className="border-dashed border-slate-300 bg-slate-50">
+              <CardContent className="p-4 text-center text-sm text-slate-600">
                 Click on a barangay on the map to view its flood susceptibility
                 and population details.
               </CardContent>
@@ -3473,7 +3560,7 @@ function FacilityDetailsPanel({
           <Button
             onClick={onUseMyLocation}
             disabled={mode === "loading"}
-            className="w-full"
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition-all"
             size="sm"
           >
             {mode === "loading" ? (
@@ -3489,8 +3576,8 @@ function FacilityDetailsPanel({
             )}
           </Button>
           {mode === "idle" && (
-            <Card className="border-dashed bg-muted/50">
-              <CardContent className="p-4 text-center text-sm text-muted-foreground">
+            <Card className="border-dashed border-slate-300 bg-slate-50">
+              <CardContent className="p-4 text-center text-sm text-slate-600">
                 {selectedTypes.length > 0
                   ? "Map filtered. Click the map or use your location to find the nearest matching facilities."
                   : "Click the map or use your location to find the nearest health facilities or evacuation centers."}
@@ -3791,7 +3878,7 @@ function FsiLoadingIndicator({ status, visible = true, compact = false }) {
         <Loader2
           className="animate-spin"
           size={16}
-          color="#1a73e8"
+          color="#2563eb"
           strokeWidth={2.5}
         />
         <span
@@ -3810,7 +3897,7 @@ function FsiLoadingIndicator({ status, visible = true, compact = false }) {
           height: "3px",
           borderRadius: "2px",
           overflow: "hidden",
-          backgroundColor: "rgba(26,115,232,0.15)",
+          backgroundColor: "rgba(37,99,235,0.15)",
         }}
       >
         <div
@@ -3820,7 +3907,7 @@ function FsiLoadingIndicator({ status, visible = true, compact = false }) {
             bottom: 0,
             width: "40%",
             borderRadius: "2px",
-            backgroundColor: "#1a73e8",
+            backgroundColor: "#2563eb",
             animation: "fsi-indeterminate 1.1s ease-in-out infinite",
           }}
         />
@@ -3844,6 +3931,7 @@ function FloodMap() {
   const [fsiVisible, setFsiVisible] = useState(true);
   const [baseLayer, setBaseLayer] = useState("satellite");
   const [fsiStatus, setFsiStatus] = useState("boundaries");
+  const navigate = useNavigate();
 
   const [selection, setSelection] = useState({
     mode: "idle",
@@ -4061,14 +4149,27 @@ function FloodMap() {
       selectedTypes.includes(EVACUATION_CENTER_TYPE));
 
   const sidebarContent = (
-    <FacilityDetailsPanel
-      selection={selection}
-      onUseMyLocation={handleUseMyLocationClick}
-      selectedTypes={selectedTypes}
-      mapMode={mapMode}
-      selectedBarangay={selectedBarangay}
-      onClearBarangay={handleClearBarangay}
-    />
+    <div className="space-y-6">
+      {/* Added full title in a p tag */}
+      <div className="pb-4 border-b border-slate-200">
+        <p className="text-sm font-extrabold text-slate-900 leading-snug">
+          <span className="block mb-1 text-xl text-blue-600 uppercase tracking-tight">
+            ABENIDA
+          </span>
+          Mapping High-Resolution Flood Susceptibility in Zamboanga City Using
+          Spatial Machine Learning
+        </p>
+      </div>
+
+      <FacilityDetailsPanel
+        selection={selection}
+        onUseMyLocation={handleUseMyLocationClick}
+        selectedTypes={selectedTypes}
+        mapMode={mapMode}
+        selectedBarangay={selectedBarangay}
+        onClearBarangay={handleClearBarangay}
+      />
+    </div>
   );
 
   const sidebarOpenNow = isDesktop ? sidebarOpen : drawerOpen;
@@ -4104,6 +4205,36 @@ function FloodMap() {
 
           /* Lift the controls above the mobile "Nearby Facilities" peek bar */
           .has-peek .leaflet-bottom.leaflet-right { margin-bottom: ${PEEK_HEIGHT + 12}px !important; }
+
+          /* ---- Fonts ---- */
+          .leaflet-container,
+          .leaflet-container .info.legend,
+          .leaflet-container .info.legend *,
+          .leaflet-tooltip,
+          .leaflet-popup-content,
+          .leaflet-popup-content *,
+          .barangay-label,
+          .map-controls button,
+          .zoom-controls button {
+            font-family: var(--font-body) !important;
+          }
+
+          /* Panel and legend titles in the display face */
+          .info.legend strong:first-child,
+          .qgis-legend-control > div > div:first-child {
+            font-family: var(--font-display) !important;
+          }
+
+          /* Overlays that set Arial inline (search, mode switcher, facility filter, loader) */
+          .relative.isolate [style*="Arial"] {
+            font-family: var(--font-body) !important;
+          }
+
+          /* Sidebar and drawer titles */
+          [data-slot="card-title"],
+          [data-slot="sheet-title"] {
+            font-family: var(--font-display);
+          }
         `}</style>
 
         <MapContainer
@@ -4197,7 +4328,8 @@ function FloodMap() {
             aria-expanded={sidebarOpenNow}
             aria-controls="flood-map-sidebar"
             title={sidebarOpenNow ? "Close sidebar" : "Open sidebar"}
-            className="absolute top-4 right-4 z-[2000] h-10 w-10 shadow-md bg-white/85 backdrop-blur hover:bg-white"
+            /* Changed top-4 to top-2 and right-[260px] to right-4 */
+            className="absolute top-2 right-4 z-[2000] h-10 w-10 shadow-md bg-white/85 backdrop-blur hover:bg-white"
           >
             {sidebarOpen ? (
               <PanelRightClose className="h-5 w-5" />
@@ -4244,6 +4376,7 @@ function FloodMap() {
           cityBoundary={cityBoundary}
           onSelectLocation={handleSearchSelect}
           compact={compact}
+          onHome={() => navigate("/")}
         />
         <FsiLoadingIndicator
           status={fsiStatus}
