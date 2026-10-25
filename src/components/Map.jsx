@@ -3358,13 +3358,43 @@ function QGISLayers({
   );
 }
 
-function FactorsList({ factors, loading, error }) {
-  if (loading)
-    return (
-      <div className="text-xs text-muted-foreground italic">
-        Computing top factors…
+function FactorsListSkeleton() {
+  return (
+    <div className="space-y-3 animate-pulse">
+      <div className="flex items-center justify-between">
+        <div className="text-xs uppercase tracking-wide text-muted-foreground">
+          Top Contributing Factors
+        </div>
       </div>
-    );
+      <div className="rounded-md bg-muted/40 p-2 text-[11px] text-muted-foreground leading-relaxed">
+        <Skeleton className="h-3.5 w-3/4 mb-2" />
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+          <div className="flex items-center gap-1">
+            <Skeleton className="h-2 w-2 rounded-full" />
+            <Skeleton className="h-3 w-20" />
+          </div>
+          <div className="flex items-center gap-1">
+            <Skeleton className="h-2 w-2 rounded-full" />
+            <Skeleton className="h-3 w-20" />
+          </div>
+        </div>
+      </div>
+      {[1, 2, 3, 4, 5].map((i) => (
+        <div key={i} className="text-xs">
+          <div className="flex justify-between items-baseline mb-0.5 gap-2">
+            <Skeleton className="h-4 w-32" />
+            <Skeleton className="h-4 w-12" />
+          </div>
+          <Skeleton className="h-3 w-48 mb-1" />
+          <Skeleton className="h-1.5 w-full rounded-full" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FactorsList({ factors, loading, error }) {
+  if (loading) return <FactorsListSkeleton />;
   if (error)
     return (
       <div className="text-xs text-red-500">
@@ -3434,6 +3464,77 @@ function FactorsList({ factors, loading, error }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function SidebarSkeleton() {
+  return (
+    <div className="space-y-6 animate-pulse">
+      {/* BarangayCard Skeleton */}
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex justify-between items-start gap-2">
+            <div className="w-full">
+              <Skeleton className="h-3 w-24 mb-2" />
+              <Skeleton className="h-5 w-3/4" />
+            </div>
+            <Skeleton className="h-8 w-16" />
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex justify-between items-center border-b pb-2">
+            <Skeleton className="h-4 w-32" />
+            <Skeleton className="h-5 w-20 rounded-full" />
+          </div>
+          <div className="flex justify-between border-b pb-2">
+            <Skeleton className="h-4 w-24" />
+            <Skeleton className="h-4 w-16" />
+          </div>
+          <div className="flex justify-between border-b pb-2">
+            <Skeleton className="h-4 w-20" />
+            <Skeleton className="h-4 w-12" />
+          </div>
+          <div className="space-y-1">
+            <Skeleton className="h-3 w-full" />
+            <Skeleton className="h-3 w-5/6" />
+            <Skeleton className="h-3 w-4/6" />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Facilities List Skeleton */}
+      <div className="space-y-3">
+        <Skeleton className="h-4 w-40 mb-2" />
+        <Card>
+          <CardHeader className="pb-2 pl-5">
+            <Skeleton className="h-4 w-3/4 mb-1" />
+            <Skeleton className="h-3 w-1/3" />
+          </CardHeader>
+          <CardContent className="space-y-2 pl-5">
+            <div className="flex justify-between border-b pb-1">
+              <Skeleton className="h-3 w-16" />
+              <Skeleton className="h-3 w-32" />
+            </div>
+            <div className="flex justify-between border-b pb-1">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-3 w-24" />
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2 pl-5">
+            <Skeleton className="h-4 w-3/4 mb-1" />
+            <Skeleton className="h-3 w-1/3" />
+          </CardHeader>
+          <CardContent className="space-y-2 pl-5">
+            <div className="flex justify-between border-b pb-1">
+              <Skeleton className="h-3 w-16" />
+              <Skeleton className="h-3 w-32" />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
@@ -3514,7 +3615,8 @@ function FacilityDetailsPanel({
   mapMode = "marker",
   selectedBarangay,
   onClearBarangay,
-  facilitiesInBarangay = [], // New prop
+  facilitiesInBarangay = [],
+  isLoadingBarangays = false, // New prop
 }) {
   const {
     mode = "idle",
@@ -3542,7 +3644,9 @@ function FacilityDetailsPanel({
     <div className="space-y-4">
       {mapMode === "barangay" ? (
         <>
-          {selectedBarangay ? (
+          {isLoadingBarangays && !selectedBarangay ? (
+            <SidebarSkeleton />
+          ) : selectedBarangay ? (
             <div className="space-y-6">
               <BarangayCard
                 barangay={selectedBarangay}
@@ -3710,32 +3814,38 @@ function FacilityDetailsPanel({
 
 function SkeletonFacilityDetails() {
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 animate-pulse">
       <Card>
-        <CardContent className="p-4">
-          <div className="flex gap-3">
-            <Skeleton className="h-6 w-6 rounded-full" />
-            <div className="space-y-2 flex-1">
-              <Skeleton className="h-3 w-20" />
-              <Skeleton className="h-4 w-3/4" />
-            </div>
+        <CardContent className="p-4 flex gap-3 items-center">
+          <Skeleton className="h-8 w-8 rounded-full" />
+          <div className="space-y-2">
+            <Skeleton className="h-3 w-20" />
+            <Skeleton className="h-4 w-40" />
           </div>
         </CardContent>
       </Card>
       {[1, 2, 3].map((i) => (
-        <Card key={i}>
-          <CardHeader className="pb-2">
-            <Skeleton className="h-5 w-3/5" />
-            <Skeleton className="h-3 w-1/3" />
+        <Card key={i} className="relative">
+          <div className="absolute top-0 left-0 w-1 h-full rounded-l-lg bg-slate-200" />
+          <CardHeader className="pb-2 pl-5">
+            <div className="flex justify-between items-start">
+              <Skeleton className="h-5 w-3/4" />
+              <Skeleton className="h-5 w-8 rounded-full" />
+            </div>
+            <Skeleton className="h-4 w-1/3 mt-1" />
           </CardHeader>
-          <CardContent className="space-y-2 text-sm">
+          <CardContent className="space-y-2 pl-5">
             <div className="flex justify-between border-b pb-2">
               <Skeleton className="h-4 w-16" />
               <Skeleton className="h-4 w-20" />
             </div>
             <div className="flex justify-between border-b pb-2">
-              <Skeleton className="h-4 w-20" />
               <Skeleton className="h-4 w-24" />
+              <Skeleton className="h-4 w-16" />
+            </div>
+            <div className="flex justify-between border-b pb-2">
+              <Skeleton className="h-4 w-20" />
+              <Skeleton className="h-4 w-32" />
             </div>
           </CardContent>
         </Card>
@@ -4311,6 +4421,10 @@ function FloodMap() {
     effectiveHiddenFacilities,
   ]);
 
+  // Calculate loading state for barangays
+  const isLoadingBarangays =
+    mapMode === "barangay" && (!barangayData || fsiStatus !== null);
+
   const sidebarContent = (
     <div className="space-y-6">
       {/* Added full title in a p tag */}
@@ -4331,7 +4445,8 @@ function FloodMap() {
         mapMode={mapMode}
         selectedBarangay={selectedBarangay}
         onClearBarangay={handleClearBarangay}
-        facilitiesInBarangay={facilitiesInSelectedBarangay} // Pass the filtered facilities
+        facilitiesInBarangay={facilitiesInSelectedBarangay}
+        isLoadingBarangays={isLoadingBarangays}
       />
     </div>
   );
