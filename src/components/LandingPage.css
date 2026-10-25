@@ -1,0 +1,235 @@
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500&display=swap");
+
+.lp {
+  --paper: #eef2f2;
+  --paper-2: #e3eaea;
+  --ink: #10222f;
+  --ink-soft: #46586a;
+  --line: #b9c7ca;
+  --water: #0f4c75;
+  --water-deep: #0a3552;
+  --ramp: linear-gradient(90deg, #d9e8ee, #8fc1d4, #f2d27a, #e8893c, #b8302a);
+
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+.lp *,
+.lp *::before,
+.lp *::after {
+  box-sizing: border-box;
+}
+
+.lp-wrap {
+  width: min(1080px, 100% - 2.5rem);
+  margin-inline: auto;
+}
+
+/* Hero */
+.lp-hero {
+  position: relative;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+  padding: clamp(3rem, 9vw, 7rem) 0 clamp(2.5rem, 6vw, 4.5rem);
+}
+
+.lp-contours {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.lp-contours path {
+  fill: none;
+  stroke: var(--water);
+  stroke-opacity: 0.16;
+  stroke-width: 1;
+}
+
+.lp-contours path.lp-index {
+  stroke-opacity: 0.32;
+  stroke-width: 1.6;
+}
+
+.lp-hero-inner {
+  position: relative;
+}
+
+.lp-place {
+  margin: 0 0 1rem;
+  font-size: 0.95rem;
+  color: var(--ink-soft);
+}
+
+.lp-title {
+  margin: 0;
+  max-width: 22ch;
+  font-family: "Fraunces", Georgia, "Times New Roman", serif;
+  font-weight: 600;
+  font-size: clamp(1.85rem, 5.2vw, 3.6rem);
+  line-height: 1.12;
+  letter-spacing: -0.01em;
+  color: var(--water-deep);
+  overflow-wrap: break-word;
+}
+
+.lp-lede {
+  max-width: 58ch;
+  margin: 1.5rem 0 0;
+  font-size: clamp(1rem, 1.6vw, 1.15rem);
+  color: var(--ink);
+}
+
+.lp-cta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.25rem 1.75rem;
+  margin-top: 2rem;
+}
+
+.lp-btn {
+  font: inherit;
+  font-weight: 500;
+  padding: 0.9rem 1.5rem;
+  color: #fff;
+  background: var(--water);
+  border: 1px solid var(--water-deep);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.lp-btn:hover {
+  background: var(--water-deep);
+}
+
+.lp-link {
+  color: var(--water-deep);
+  text-underline-offset: 3px;
+}
+
+.lp a:focus-visible,
+.lp button:focus-visible {
+  outline: 3px solid #e8893c;
+  outline-offset: 3px;
+}
+
+.lp-ramp {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: 320px;
+  margin-top: 2.5rem;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.lp-ramp i {
+  flex: 1;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--ramp);
+}
+
+/* Sections */
+.lp-section {
+  padding: clamp(2.5rem, 6vw, 4.5rem) 0;
+}
+
+.lp-tint {
+  background: var(--paper-2);
+  border-block: 1px solid var(--line);
+}
+
+.lp h2 {
+  margin: 0 0 0.5rem;
+  font-family: "Fraunces", Georgia, serif;
+  font-weight: 500;
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  line-height: 1.2;
+}
+
+.lp-sub {
+  margin: 0 0 2rem;
+  color: var(--ink-soft);
+}
+
+.lp-two {
+  display: grid;
+  gap: 1rem 3rem;
+  grid-template-columns: 1fr;
+}
+
+.lp-two p {
+  margin: 0 0 1rem;
+  max-width: 62ch;
+}
+
+.lp-grid {
+  display: grid;
+  gap: 0;
+  margin: 1.5rem 0 0;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  border-top: 1px solid var(--line);
+}
+
+.lp-sub + .lp-grid {
+  margin-top: 0;
+}
+
+.lp-item {
+  padding: 1.25rem 1.5rem 1.25rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.lp-item dt {
+  font-weight: 500;
+  color: var(--water-deep);
+}
+
+.lp-item dd {
+  margin: 0.35rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.97rem;
+}
+
+.lp-final {
+  padding: 0 0 clamp(2.5rem, 6vw, 4rem);
+}
+
+.lp-footer {
+  padding: 1.5rem 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+}
+
+.lp-footer p {
+  margin: 0;
+}
+
+@media (min-width: 760px) {
+  .lp-two {
+    grid-template-columns: 1fr 2fr;
+  }
+  .lp-grid-2 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .lp-btn {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lp-btn {
+    transition: none;
+  }
+}
