@@ -57,6 +57,19 @@ import {
 export const EVACUATION_CENTER_TYPE = "Evacuation Center";
 
 // ==========================================
+// GLOBAL CACHE (Prevents redundant fetches)
+// ==========================================
+const APP_CACHE = {
+  qgis: {},
+  facilities: null,
+  evacCenters: null,
+  cityBoundary: null,
+  barangays: null,
+  populations: null,
+  fsi: {},
+};
+
+// ==========================================
 // FSI SERVER CONFIGURATION
 // ==========================================
 const USE_SERVER =
@@ -327,7 +340,7 @@ const FSI_OPACITY = {
   borderOpacity: 0.85,
 };
 
-const ROUTE_COLORS = ["#2563eb", "#f59e0b", "#ef4444"]; // Updated to Tailwind colors
+const ROUTE_COLORS = ["#2563eb", "#f59e0b", "#ef4444"];
 
 const FSI_MESSAGES = {
   "Very High Risk":
@@ -628,6 +641,7 @@ function buildNameKeys(raw) {
 }
 
 async function fetchBarangayPopulations() {
+  if (APP_CACHE.populations) return APP_CACHE.populations;
   try {
     const res = await fetch(POPULATION_XLSX_URL);
     if (!res.ok) throw new Error(`Population fetch failed: ${res.status}`);
@@ -648,6 +662,7 @@ async function fetchBarangayPopulations() {
         if (!popMap.has(key)) popMap.set(key, population);
       }
     }
+    APP_CACHE.populations = popMap;
     return popMap;
   } catch (err) {
     console.warn("Barangay population load failed:", err.message);
@@ -804,6 +819,9 @@ async function fetchServerFsiBatch(points, model = DEFAULT_FSI_MODEL) {
 }
 
 async function resolveBarangayFsi(features, model = DEFAULT_FSI_MODEL) {
+  if (APP_CACHE.fsi[model]) {
+    return APP_CACHE.fsi[model];
+  }
   const result = new Map();
   if (!USE_SERVER) {
     for (const f of features) {
@@ -815,6 +833,7 @@ async function resolveBarangayFsi(features, model = DEFAULT_FSI_MODEL) {
         top_factors: [],
       });
     }
+    APP_CACHE.fsi[model] = result;
     return result;
   }
   const order = [],
@@ -874,6 +893,7 @@ async function resolveBarangayFsi(features, model = DEFAULT_FSI_MODEL) {
         top_factors: [],
       });
   }
+  APP_CACHE.fsi[model] = result;
   return result;
 }
 
@@ -1695,6 +1715,27 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
       try {
         setLoading(true);
         setError(null);
+
+        // Check cache first
+        if (APP_CACHE.facilities) {
+          allFacilitiesRef.current = APP_CACHE.facilities;
+          onFacilitiesRef.current?.(
+            APP_CACHE.facilities.map((row) => ({
+              lat: row.lat,
+              lon: row.lon,
+              name: row.name,
+              type: row.type,
+              addr_street: row.addr_street,
+              addr_city: row.addr_city,
+              phone: row.phone,
+              website: row.website,
+            })),
+          );
+          renderRef.current?.(APP_CACHE.facilities, map.getZoom());
+          setLoading(false);
+          return;
+        }
+
         const { data, error: qe } = await supabase
           .from("health_facilities")
           .select(
@@ -1702,6 +1743,7 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
           );
         if (qe) throw qe;
         if (mounted && data) {
+          APP_CACHE.facilities = data; // Save to cache
           allFacilitiesRef.current = data;
           onFacilitiesRef.current?.(
             data.map((row) => ({
@@ -1855,6 +1897,16 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
       try {
         setLoading(true);
         setError(null);
+
+        // Check cache first
+        if (APP_CACHE.evacCenters) {
+          allCentersRef.current = APP_CACHE.evacCenters;
+          onCentersRef.current?.(APP_CACHE.evacCenters);
+          renderRef.current?.(APP_CACHE.evacCenters, map.getZoom());
+          setLoading(false);
+          return;
+        }
+
         const { data, error: qe } = await supabase
           .from("evacuation_centers")
           .select(
@@ -1862,6 +1914,7 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
           );
         if (qe) throw qe;
         if (mounted && data) {
+          APP_CACHE.evacCenters = data; // Save to cache
           allCentersRef.current = data;
           onCentersRef.current?.(data);
           renderRef.current?.(data, map.getZoom());
@@ -2315,12 +2368,28 @@ function ZamboangaMask({
     const tp = map.getPane("tooltipPane");
     if (tp) tp.style.zIndex = 660;
 
-    Promise.all([
-      fetch("/zamboanga_city_boundary.geojson").then((r) => r.json()),
-      fetch("/zamboanga_city_barangays.geojson").then((r) => r.json()),
-      fetchBarangayPopulations(),
-      fetchZamboangaMaritimeBoundary(),
-    ]).then(([cityData, barangayData, popMap, maritime]) => {
+    const fetchBoundaries = async () => {
+      let cityData = APP_CACHE.cityBoundary;
+      if (!cityData) {
+        const res = await fetch("/zamboanga_city_boundary.geojson");
+        cityData = await res.json();
+        APP_CACHE.cityBoundary = cityData;
+      }
+
+      let barangayData = APP_CACHE.barangays;
+      if (!barangayData) {
+        const res = await fetch("/zamboanga_city_barangays.geojson");
+        barangayData = await res.json();
+        APP_CACHE.barangays = barangayData;
+      }
+
+      const popMap = await fetchBarangayPopulations();
+      const maritime = await fetchZamboangaMaritimeBoundary();
+
+      return [cityData, barangayData, popMap, maritime];
+    };
+
+    fetchBoundaries().then(([cityData, barangayData, popMap, maritime]) => {
       if (cancelled) return;
       const feature = cityData.features[0];
       onBoundaryLoaded?.(feature);
@@ -2980,6 +3049,27 @@ function QGISRasterLayer({
       }
       if (attemptedRef.current && layerRef.current) return;
 
+      // CHECK CACHE FIRST
+      if (APP_CACHE.qgis[layerKey]) {
+        const cached = APP_CACHE.qgis[layerKey];
+        if (layerRef.current) map.removeLayer(layerRef.current);
+
+        const overlay = L.imageOverlay(cached.dataUrl, cached.bounds, {
+          opacity: QGIS_LAYER_CONFIGS[layerKey].opacity || 0.8,
+          interactive: false,
+          pane: "qgis-pane",
+        });
+        overlay.addTo(map);
+        layerRef.current = overlay;
+
+        onRasterLoaded?.(layerKey, cached.stats);
+        onProgress?.(layerKey, 100);
+        map.fitBounds(cached.bounds, { padding: [50, 50] });
+        attemptedRef.current = true;
+        onLoadingChange?.(layerKey, false);
+        return;
+      }
+
       const config = QGIS_LAYER_CONFIGS[layerKey];
       try {
         onLoadingChange?.(layerKey, true);
@@ -3109,26 +3199,23 @@ function QGISRasterLayer({
         const [west, south, east, north] = bbox;
         const bl = utmToLatLng(west, south);
         const tr = utmToLatLng(east, north);
+        const bounds = [
+          [bl.lat, bl.lng],
+          [tr.lat, tr.lng],
+        ];
 
         if (cancelled || !mountedRef.current) return;
         if (layerRef.current) map.removeLayer(layerRef.current);
 
-        const overlay = L.imageOverlay(
-          dataUrl,
-          [
-            [bl.lat, bl.lng],
-            [tr.lat, tr.lng],
-          ],
-          {
-            opacity: config.opacity || 0.8,
-            interactive: false,
-            pane: "qgis-pane",
-          },
-        );
+        const overlay = L.imageOverlay(dataUrl, bounds, {
+          opacity: config.opacity || 0.8,
+          interactive: false,
+          pane: "qgis-pane",
+        });
         overlay.addTo(map);
         layerRef.current = overlay;
 
-        onRasterLoaded?.(layerKey, {
+        const stats = {
           values,
           width,
           height,
@@ -3136,15 +3223,14 @@ function QGISRasterLayer({
           noDataValue,
           minVal,
           maxVal,
-        });
+        };
+
+        // SAVE TO CACHE
+        APP_CACHE.qgis[layerKey] = { dataUrl, bounds, stats };
+
+        onRasterLoaded?.(layerKey, stats);
         onProgress?.(layerKey, 100);
-        map.fitBounds(
-          [
-            [bl.lat, bl.lng],
-            [tr.lat, tr.lng],
-          ],
-          { padding: [50, 50] },
-        );
+        map.fitBounds(bounds, { padding: [50, 50] });
       } catch (err) {
         if (err.name === "AbortError" || cancelled) return;
         console.error(`[QGIS] Failed ${layerKey}:`, err);
