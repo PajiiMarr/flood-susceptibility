@@ -1603,12 +1603,18 @@ function getDominantEmoji(markers) {
   return topEmojis.length === 1 ? topEmojis[0][0] : DEFAULT_MARKER_EMOJI;
 }
 
-function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
+function POILayer({
+  onFacilities,
+  hiddenFacilities = [],
+  visible = true,
+  onFacilityClick,
+}) {
   const map = useMap();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const clusterRef = useRef(null);
   const onFacilitiesRef = useRef(onFacilities);
+  const onFacilityClickRef = useRef(onFacilityClick);
   const allFacilitiesRef = useRef([]);
   const [currentZoom, setCurrentZoom] = useState(map.getZoom());
   const visibleRef = useRef(visible);
@@ -1621,6 +1627,9 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
   useEffect(() => {
     onFacilitiesRef.current = onFacilities;
   }, [onFacilities]);
+  useEffect(() => {
+    onFacilityClickRef.current = onFacilityClick;
+  }, [onFacilityClick]);
   useEffect(() => {
     const h = () => setCurrentZoom(map.getZoom());
     map.on("zoomend", h);
@@ -1669,11 +1678,15 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
             className: "custom-poi-marker",
           });
           const popup = `<div style="min-width: 150px;"><strong>${row.name}</strong><br>Type: ${row.type}<br>${row.addr_street ? `Address: ${row.addr_street}<br>` : ""}${row.addr_city ? `City: ${row.addr_city}<br>` : ""}${row.phone ? `Phone: ${row.phone}<br>` : ""}${row.website ? `Website: <a href="${row.website}" target="_blank">link</a>` : ""}</div>`;
-          return L.marker([row.lat, row.lon], {
+          const marker = L.marker([row.lat, row.lon], {
             icon,
             facilityType: row.type,
             pane: "facilities-pane",
           }).bindPopup(popup);
+          marker.on("click", () => {
+            if (onFacilityClickRef.current) onFacilityClickRef.current(row);
+          });
+          return marker;
         });
         cg.addLayers(markers);
         cg.addTo(map);
@@ -1688,13 +1701,15 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
             className: "custom-poi-marker",
           });
           const popup = `<div style="min-width: 150px;"><strong>${row.name}</strong><br>Type: ${row.type}<br>${row.addr_street ? `Address: ${row.addr_street}<br>` : ""}${row.addr_city ? `City: ${row.addr_city}<br>` : ""}${row.phone ? `Phone: ${row.phone}<br>` : ""}${row.website ? `Website: <a href="${row.website}" target="_blank">link</a>` : ""}</div>`;
-          group.addLayer(
-            L.marker([row.lat, row.lon], {
-              icon,
-              facilityType: row.type,
-              pane: "facilities-pane",
-            }).bindPopup(popup),
-          );
+          const marker = L.marker([row.lat, row.lon], {
+            icon,
+            facilityType: row.type,
+            pane: "facilities-pane",
+          }).bindPopup(popup);
+          marker.on("click", () => {
+            if (onFacilityClickRef.current) onFacilityClickRef.current(row);
+          });
+          group.addLayer(marker);
         });
         group.addTo(map);
         clusterRef.current = group;
@@ -1784,7 +1799,11 @@ function POILayer({ onFacilities, hiddenFacilities = [], visible = true }) {
   return null;
 }
 
-function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
+function EvacuationCentersLayer({
+  onCentersLoaded,
+  visible = true,
+  onFacilityClick,
+}) {
   const map = useMap();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -1792,6 +1811,7 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
   const clusterRef = useRef(null);
   const allCentersRef = useRef([]);
   const onCentersRef = useRef(onCentersLoaded);
+  const onFacilityClickRef = useRef(onFacilityClick);
   const visibleRef = useRef(visible);
   const [renderTick, setRenderTick] = useState(0);
 
@@ -1802,6 +1822,9 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
   useEffect(() => {
     onCentersRef.current = onCentersLoaded;
   }, [onCentersLoaded]);
+  useEffect(() => {
+    onFacilityClickRef.current = onFacilityClick;
+  }, [onFacilityClick]);
   useEffect(() => {
     const h = () => setCurrentZoom(map.getZoom());
     map.on("zoomend", h);
@@ -1859,24 +1882,33 @@ function EvacuationCentersLayer({ onCentersLoaded, visible = true }) {
           },
         });
         valid.forEach((row) => {
-          L.marker([row.latitude, row.longitude], {
+          const marker = L.marker([row.latitude, row.longitude], {
             icon: markerIcon(),
             pane: "facilities-pane",
-          })
-            .bindPopup(popupHtml(row))
-            .addTo(cg);
+          }).bindPopup(popupHtml(row));
+          marker.on("click", () => {
+            if (onFacilityClickRef.current) {
+              // Convert to facility format for consistency
+              onFacilityClickRef.current(evacCenterToFacility(row));
+            }
+          });
+          marker.addTo(cg);
         });
         cg.addTo(map);
         clusterRef.current = cg;
       } else {
         const group = L.layerGroup();
         valid.forEach((row) => {
-          L.marker([row.latitude, row.longitude], {
+          const marker = L.marker([row.latitude, row.longitude], {
             icon: markerIcon(),
             pane: "facilities-pane",
-          })
-            .bindPopup(popupHtml(row))
-            .addTo(group);
+          }).bindPopup(popupHtml(row));
+          marker.on("click", () => {
+            if (onFacilityClickRef.current) {
+              onFacilityClickRef.current(evacCenterToFacility(row));
+            }
+          });
+          marker.addTo(group);
         });
         group.addTo(map);
         clusterRef.current = group;
@@ -1996,6 +2028,7 @@ function RoutingLayer({
   onLocationChange,
   mapMode,
   onBarangaySelect,
+  onMapClick, // NEW
 }) {
   const map = useMap();
   const [mode, setMode] = useState("idle");
@@ -2022,6 +2055,10 @@ function RoutingLayer({
   useEffect(() => {
     onBarangaySelectRef.current = onBarangaySelect;
   }, [onBarangaySelect]);
+  const onMapClickRef = useRef(onMapClick);
+  useEffect(() => {
+    onMapClickRef.current = onMapClick;
+  }, [onMapClick]);
 
   useEffect(() => {
     onSelectionChange?.({
@@ -2153,6 +2190,8 @@ function RoutingLayer({
 
   useMapEvents({
     click(e) {
+      if (onMapClickRef.current) onMapClickRef.current(); // Clear selection
+
       const m = mapModeRef.current;
       if (m === "barangay") {
         const b = findBarangayForPoint(e.latlng, barangayDataRef.current);
@@ -3694,6 +3733,113 @@ function BarangayCard({ barangay, onClear }) {
   );
 }
 
+function SelectedFacilityCard({ facility, onClear }) {
+  if (!facility) return null;
+  const isEvac =
+    Boolean(facility._evac) || facility.type === EVACUATION_CENTER_TYPE;
+
+  return (
+    <Card className="relative">
+      <div
+        className="absolute top-0 left-0 w-1 h-full rounded-l-lg"
+        style={{ backgroundColor: isEvac ? "#ef4444" : "#2563eb" }}
+      />
+      <CardHeader className="pb-2 pl-5">
+        <div className="flex justify-between items-start">
+          <CardTitle className="text-base">{facility.name}</CardTitle>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onClear}
+            className="h-6 px-2 text-xs"
+          >
+            Clear
+          </Button>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          {isEvac ? "⛺ Evacuation Center" : facility.type}
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm pl-5">
+        {isEvac ? (
+          <>
+            {facility._evac?.location && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Location</span>
+                <span className="font-medium text-right">
+                  {facility._evac.location}
+                </span>
+              </div>
+            )}
+            {facility._evac?.district && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">District</span>
+                <span className="font-medium text-right">
+                  {facility._evac.district}
+                </span>
+              </div>
+            )}
+            {facility._evac?.floor_area_sqm != null && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Floor area</span>
+                <span className="font-medium text-right">
+                  {facility._evac.floor_area_sqm} sqm
+                </span>
+              </div>
+            )}
+            {facility._evac?.proximity && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Proximity</span>
+                <span className="font-medium text-right">
+                  {facility._evac.proximity}
+                </span>
+              </div>
+            )}
+            {facility._evac?.remarks && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Remarks</span>
+                <span className="font-medium text-right text-amber-600">
+                  {facility._evac.remarks}
+                </span>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {facility.addr_street && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Address</span>
+                <span className="font-medium text-right">
+                  {facility.addr_street}
+                </span>
+              </div>
+            )}
+            {facility.phone && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Phone</span>
+                <span className="font-medium">{facility.phone}</span>
+              </div>
+            )}
+            {facility.website && (
+              <div className="flex justify-between border-b pb-2">
+                <span className="text-muted-foreground">Website</span>
+                <a
+                  href={facility.website}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium underline text-primary"
+                >
+                  Visit
+                </a>
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function FacilityDetailsPanel({
   selection,
   onUseMyLocation,
@@ -3702,7 +3848,9 @@ function FacilityDetailsPanel({
   selectedBarangay,
   onClearBarangay,
   facilitiesInBarangay = [],
-  isLoadingBarangays = false, // New prop
+  isLoadingBarangays = false,
+  selectedFacility, // NEW
+  onClearFacility, // NEW
 }) {
   const {
     mode = "idle",
@@ -3711,6 +3859,18 @@ function FacilityDetailsPanel({
     origin = null,
     originBarangay = null,
   } = selection || {};
+
+  // If a facility is selected via map click, override the current panel content
+  if (selectedFacility) {
+    return (
+      <div className="space-y-4">
+        <SelectedFacilityCard
+          facility={selectedFacility}
+          onClear={onClearFacility}
+        />
+      </div>
+    );
+  }
 
   // ---------- No mode selected ----------
   if (mapMode === "none") {
@@ -4237,6 +4397,7 @@ function FloodMap() {
   const [facilitiesVisible, setFacilitiesVisible] = useState(true);
   const [mapMode, setMapMode] = useState("marker");
   const [selectedBarangay, setSelectedBarangay] = useState(null);
+  const [selectedFacility, setSelectedFacility] = useState(null); // NEW
 
   const isDesktop = useMediaQuery("(min-width: 1024px)");
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -4280,9 +4441,12 @@ function FloodMap() {
   }, [isDesktop]);
 
   useEffect(() => {
-    if (!isDesktop && (selection.mode === "done" || selectedBarangay))
+    if (
+      !isDesktop &&
+      (selection.mode === "done" || selectedBarangay || selectedFacility)
+    )
       setDrawerOpen(true);
-  }, [isDesktop, selection.mode, selectedBarangay]);
+  }, [isDesktop, selection.mode, selectedBarangay, selectedFacility]);
 
   const searchSelectRef = useRef(null);
   const clearLocationRef = useRef(null);
@@ -4347,7 +4511,12 @@ function FloodMap() {
     }
   }, []);
 
-  const handleClear = useCallback(() => clearLocationRef.current?.(), []);
+  const handleClear = useCallback(() => {
+    clearLocationRef.current?.();
+    setSelectedFacility(null);
+    setSelectedBarangay(null);
+  }, []);
+
   const handleCenter = useCallback(() => centerLocationRef.current?.(), []);
 
   const handleLayerToggle = useCallback((key) => {
@@ -4401,10 +4570,14 @@ function FloodMap() {
   const handleModeChange = useCallback((newMode) => {
     setMapMode(newMode); // "marker" | "barangay" | "none"
     if (newMode !== "barangay") setSelectedBarangay(null);
+    setSelectedFacility(null); // Clear facility when changing mode
   }, []);
 
   // 1. Declare these FIRST so handleSearchSelect can reference them
-  const handleBarangaySelect = useCallback((b) => setSelectedBarangay(b), []);
+  const handleBarangaySelect = useCallback((b) => {
+    setSelectedBarangay(b);
+    setSelectedFacility(null); // Clear facility when selecting a barangay
+  }, []);
   const handleClearBarangay = useCallback(() => setSelectedBarangay(null), []);
 
   // 2. Now declare handleSearchSelect
@@ -4533,6 +4706,8 @@ function FloodMap() {
         onClearBarangay={handleClearBarangay}
         facilitiesInBarangay={facilitiesInSelectedBarangay}
         isLoadingBarangays={isLoadingBarangays}
+        selectedFacility={selectedFacility}
+        onClearFacility={() => setSelectedFacility(null)}
       />
     </div>
   );
@@ -4631,10 +4806,12 @@ function FloodMap() {
             onFacilities={setFacilities}
             hiddenFacilities={effectiveHiddenFacilities}
             visible={facilitiesVisible}
+            onFacilityClick={setSelectedFacility}
           />
           <EvacuationCentersLayer
             onCentersLoaded={setEvacuationCenters}
             visible={showEvacCenters}
+            onFacilityClick={setSelectedFacility}
           />
           <QGISLayers
             activeLayers={activeQGISLayers}
@@ -4662,6 +4839,7 @@ function FloodMap() {
             onLocationChange={handleLocationChange}
             mapMode={mapMode}
             onBarangaySelect={handleBarangaySelect}
+            onMapClick={() => setSelectedFacility(null)} // Clear selection on map click
           />
           <MapControls
             onLocate={handleLocate}
