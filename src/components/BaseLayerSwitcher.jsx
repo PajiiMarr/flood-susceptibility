@@ -38,7 +38,7 @@ const SHORT_NAMES = {
   hand: "HAND",
   flow_accumulation: "Flow Accum.",
   chirps: "Rainfall",
-  distance_to_river: "River Dist.",
+  distance_to_river: "River Distance",
 };
 
 // CSS gradients that mirror getColorRamp() in FloodMap, so each tile previews
@@ -277,6 +277,7 @@ function DetailOption({
   compact,
 }) {
   const [hover, setHover] = useState(false);
+  const [imgFailed, setImgFailed] = useState(false);
   const gradient = RAMP_GRADIENTS[config.colorScale] || FALLBACK_GRADIENT;
   // Show the ring while loading, or whenever a live progress value exists
   // for an active layer (guards against loading flicker).
@@ -335,10 +336,31 @@ function DetailOption({
                 : "2px solid transparent",
             boxShadow:
               active || error ? "none" : "inset 0 0 0 1px rgba(0,0,0,0.1)",
-            background: `${gradient}`,
+            // With a PNG preview use a neutral backdrop so transparent PNG
+            // areas don't show the gradient; gradient is only the fallback.
+            background:
+              config.preview && !imgFailed ? "#2b3a32" : `${gradient}`,
             transition: "border-color 0.15s ease",
           }}
         >
+          {/* PNG preview (falls back to the gradient background if missing) */}
+          {config.preview && !imgFailed && (
+            <img
+              src={config.preview}
+              alt=""
+              draggable={false}
+              onError={() => setImgFailed(true)}
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                objectFit: "cover",
+                display: "block",
+                pointerEvents: "none",
+              }}
+            />
+          )}
           {/* Dim inactive tiles slightly so the active one pops */}
           <div
             style={{
@@ -390,9 +412,8 @@ function DetailOption({
           fontWeight: active ? 700 : 500,
           color: error ? "#e53935" : active ? ACCENT : "#3c4043",
           maxWidth: size + 6,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
+          whiteSpace: "normal",
+          overflowWrap: "anywhere",
         }}
       >
         {label}

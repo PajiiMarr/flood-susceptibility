@@ -454,6 +454,7 @@ const QGIS_LAYER_CONFIGS = {
   dem: {
     name: "Digital Elevation Model",
     path: buildAzurePath("Zamboanga_DEM.tif"),
+    preview: "dem.png",
     colorScale: "terrain",
     opacity: 0.8,
     previewColor: "#4CAF50",
@@ -463,6 +464,7 @@ const QGIS_LAYER_CONFIGS = {
   slope: {
     name: "Slope",
     path: buildAzurePath("Zamboanga_Slope.tiff"),
+    preview: "/slope.png",
     colorScale: "slope",
     opacity: 0.8,
     previewColor: "#FF9800",
@@ -472,6 +474,7 @@ const QGIS_LAYER_CONFIGS = {
   aspect: {
     name: "Aspect",
     path: buildAzurePath("Zamboanga_Aspect.tiff"),
+    preview: "/aspect.png",
     colorScale: "hsv",
     opacity: 0.8,
     previewColor: "#9C27B0",
@@ -481,6 +484,7 @@ const QGIS_LAYER_CONFIGS = {
   twi: {
     name: "Topographic Wetness Index",
     path: buildAzurePath("Zamboanga_TWI.tif"),
+    preview: "/twi.png",
     colorScale: "blues",
     opacity: 0.8,
     previewColor: "#2196F3",
@@ -490,6 +494,7 @@ const QGIS_LAYER_CONFIGS = {
   hand: {
     name: "Height Above Nearest Drainage",
     path: buildAzurePath("Zamboanga_HAND.tif"),
+    preview: "/hand.png",
     colorScale: "reds",
     opacity: 0.8,
     previewColor: "#F44336",
@@ -499,6 +504,7 @@ const QGIS_LAYER_CONFIGS = {
   flow_accumulation: {
     name: "Flow Accumulation",
     path: buildAzurePath("Zamboanga_Flow_Accumulation.tif"),
+    preview: "/flow_accumulation.png",
     colorScale: "blues",
     opacity: 0.8,
     previewColor: "#00BCD4",
@@ -508,6 +514,7 @@ const QGIS_LAYER_CONFIGS = {
   chirps: {
     name: "CHIRPS Rainfall",
     path: buildAzurePath("Zamboanga_CHIRPS_Resampled.tiff"),
+    preview: "/rainfall.png",
     colorScale: "rainbow",
     opacity: 0.8,
     previewColor: "#E91E63",
@@ -517,6 +524,7 @@ const QGIS_LAYER_CONFIGS = {
   distance_to_river: {
     name: "Distance to River",
     path: buildAzurePath("Zamboanga_Distance_to_river.tiff"),
+    preview: "/river_distance.png",
     colorScale: "purples",
     opacity: 0.8,
     previewColor: "#6A1B9A",
