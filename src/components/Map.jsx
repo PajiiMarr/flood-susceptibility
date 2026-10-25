@@ -3514,6 +3514,7 @@ function FacilityDetailsPanel({
   mapMode = "marker",
   selectedBarangay,
   onClearBarangay,
+  facilitiesInBarangay = [], // New prop
 }) {
   const {
     mode = "idle",
@@ -3542,10 +3543,103 @@ function FacilityDetailsPanel({
       {mapMode === "barangay" ? (
         <>
           {selectedBarangay ? (
-            <BarangayCard
-              barangay={selectedBarangay}
-              onClear={onClearBarangay}
-            />
+            <div className="space-y-6">
+              <BarangayCard
+                barangay={selectedBarangay}
+                onClear={onClearBarangay}
+              />
+
+              {/* List of facilities inside the barangay */}
+              <div className="space-y-3">
+                <h4 className="text-xs uppercase tracking-wide text-muted-foreground font-semibold">
+                  Facilities in {selectedBarangay.name}
+                </h4>
+                {facilitiesInBarangay.length === 0 ? (
+                  <Card className="border-dashed border-slate-300 bg-slate-50">
+                    <CardContent className="p-4 text-center text-sm text-slate-600">
+                      No matching health facilities or evacuation centers found
+                      in this barangay.
+                    </CardContent>
+                  </Card>
+                ) : (
+                  facilitiesInBarangay.map((facility, index) => {
+                    const isEvac =
+                      Boolean(facility._evac) ||
+                      facility.type === EVACUATION_CENTER_TYPE;
+                    return (
+                      <Card
+                        key={`${facility.name}-${index}`}
+                        className="relative"
+                      >
+                        <div
+                          className="absolute top-0 left-0 w-1 h-full rounded-l-lg"
+                          style={{
+                            backgroundColor: isEvac ? "#ef4444" : "#2563eb",
+                          }}
+                        />
+                        <CardHeader className="pb-2 pl-5">
+                          <CardTitle className="text-sm leading-tight">
+                            {facility.name}
+                          </CardTitle>
+                          <p className="text-xs text-muted-foreground">
+                            {isEvac ? "⛺ Evacuation Center" : facility.type}
+                          </p>
+                        </CardHeader>
+                        <CardContent className="space-y-1 text-xs pl-5">
+                          {isEvac ? (
+                            <>
+                              {facility._evac?.location && (
+                                <div className="flex justify-between border-b pb-1">
+                                  <span className="text-muted-foreground">
+                                    Location
+                                  </span>
+                                  <span className="font-medium text-right">
+                                    {facility._evac.location}
+                                  </span>
+                                </div>
+                              )}
+                              {facility._evac?.district && (
+                                <div className="flex justify-between border-b pb-1">
+                                  <span className="text-muted-foreground">
+                                    District
+                                  </span>
+                                  <span className="font-medium text-right">
+                                    {facility._evac.district}
+                                  </span>
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              {facility.addr_street && (
+                                <div className="flex justify-between border-b pb-1">
+                                  <span className="text-muted-foreground">
+                                    Address
+                                  </span>
+                                  <span className="font-medium text-right">
+                                    {facility.addr_street}
+                                  </span>
+                                </div>
+                              )}
+                              {facility.phone && (
+                                <div className="flex justify-between border-b pb-1">
+                                  <span className="text-muted-foreground">
+                                    Phone
+                                  </span>
+                                  <span className="font-medium">
+                                    {facility.phone}
+                                  </span>
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </CardContent>
+                      </Card>
+                    );
+                  })
+                )}
+              </div>
+            </div>
           ) : (
             <Card className="border-dashed border-slate-300 bg-slate-50">
               <CardContent className="p-4 text-center text-sm text-slate-600">
@@ -4095,11 +4189,9 @@ function FloodMap() {
   const handleRequestCenter = useCallback((fn) => {
     centerLocationRef.current = fn;
   }, []);
-  const handleSearchSelect = useCallback((latlng) => {
-    searchSelectRef.current?.(latlng);
-  }, []);
 
   const handleUseMyLocationClick = () => locationHandlerRef.current?.();
+
   const handleAlertClose = () => {
     resetHandlerRef.current?.();
     setSelection((p) => ({
@@ -4115,8 +4207,30 @@ function FloodMap() {
     if (newMode !== "barangay") setSelectedBarangay(null);
   }, []);
 
+  // 1. Declare these FIRST so handleSearchSelect can reference them
   const handleBarangaySelect = useCallback((b) => setSelectedBarangay(b), []);
   const handleClearBarangay = useCallback(() => setSelectedBarangay(null), []);
+
+  // 2. Now declare handleSearchSelect
+  const handleSearchSelect = useCallback(
+    (latlng) => {
+      // Try to find if the searched location is inside a barangay
+      if (barangayData) {
+        const b = findBarangayForPoint(latlng, barangayData);
+        if (b) {
+          // Focus the barangay and switch mode to behave exactly like Barangay Mode
+          handleBarangaySelect(b);
+          setMapMode("barangay");
+          return; // Skip the facility search
+        }
+      }
+
+      // If it's not inside a barangay (or no data yet), do the regular marker search
+      searchSelectRef.current?.(latlng);
+    },
+    [barangayData, handleBarangaySelect],
+  );
+
   const handleSelectAllTypes = useCallback(() => setSelectedTypes([]), []);
   const handleToggleType = useCallback((type) => {
     setSelectedTypes((prev) =>
@@ -4148,6 +4262,55 @@ function FloodMap() {
     (selectedTypes.length === 0 ||
       selectedTypes.includes(EVACUATION_CENTER_TYPE));
 
+  // Calculate facilities inside the selected barangay boundary
+  const facilitiesInSelectedBarangay = useMemo(() => {
+    if (mapMode !== "barangay" || !selectedBarangay || !barangayData) return [];
+
+    const feature = barangayData.features.find(
+      (f) => f.properties.adm4_name === selectedBarangay.name,
+    );
+    if (!feature) return [];
+
+    const active = selectedTypes || [];
+    const healthTypes = active.filter((t) => t !== EVACUATION_CENTER_TYPE);
+    const evacSelected = active.includes(EVACUATION_CENTER_TYPE);
+
+    // Filter health facilities based on visibility and boundaries
+    let visibleHealth = [];
+    if (active.length === 0 || healthTypes.length > 0) {
+      visibleHealth = facilities.filter((f) => {
+        if (active.length > 0 && !healthTypes.includes(f.type)) return false;
+        if (
+          effectiveHiddenFacilities.some(
+            (h) => h.lat === f.lat && h.lon === f.lon,
+          )
+        )
+          return false;
+        return booleanPointInPolygon([f.lon, f.lat], feature);
+      });
+    }
+
+    // Filter evacuation centers
+    let visibleEvac = [];
+    if (facilitiesVisible && (active.length === 0 || evacSelected)) {
+      visibleEvac = evacuationCenters
+        .map(evacCenterToFacility)
+        .filter((f) => Number.isFinite(f.lat) && Number.isFinite(f.lon))
+        .filter((f) => booleanPointInPolygon([f.lon, f.lat], feature));
+    }
+
+    return [...visibleHealth, ...visibleEvac];
+  }, [
+    mapMode,
+    selectedBarangay,
+    barangayData,
+    facilities,
+    evacuationCenters,
+    selectedTypes,
+    facilitiesVisible,
+    effectiveHiddenFacilities,
+  ]);
+
   const sidebarContent = (
     <div className="space-y-6">
       {/* Added full title in a p tag */}
@@ -4168,6 +4331,7 @@ function FloodMap() {
         mapMode={mapMode}
         selectedBarangay={selectedBarangay}
         onClearBarangay={handleClearBarangay}
+        facilitiesInBarangay={facilitiesInSelectedBarangay} // Pass the filtered facilities
       />
     </div>
   );
@@ -4328,7 +4492,6 @@ function FloodMap() {
             aria-expanded={sidebarOpenNow}
             aria-controls="flood-map-sidebar"
             title={sidebarOpenNow ? "Close sidebar" : "Open sidebar"}
-            /* Changed top-4 to top-2 and right-[260px] to right-4 */
             className="absolute top-2 right-4 z-[2000] h-10 w-10 shadow-md bg-white/85 backdrop-blur hover:bg-white"
           >
             {sidebarOpen ? (
