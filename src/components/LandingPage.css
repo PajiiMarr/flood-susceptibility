@@ -233,3 +233,19 @@
     transition: none;
   }
 }
+
+/* Smooth scrolling for in-page links, only while the landing page is mounted */
+html:has(.lp) {
+  scroll-behavior: smooth;
+}
+
+/* Keep section headings from sitting flush against the top edge after a jump */
+.lp-section {
+  scroll-margin-top: 1.5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:has(.lp) {
+    scroll-behavior: auto;
+  }
+}

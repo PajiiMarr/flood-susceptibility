@@ -118,7 +118,16 @@ export default function LandingPage({ onEnterMap }) {
             <button type="button" className="lp-btn" onClick={onEnterMap}>
               Open the flood susceptibility map
             </button>
-            <a className="lp-link" href="#methodology">
+            <a
+              className="lp-link"
+              href="#methodology"
+              onClick={(e) => {
+                e.preventDefault();
+                document
+                  .getElementById("methodology")
+                  ?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}
+            >
               Read the methodology
             </a>
           </div>
