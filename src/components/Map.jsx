@@ -980,15 +980,22 @@ function MapResizer() {
   return null;
 }
 
-function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
+function LegendControl({
+  fsiVisible,
+  onToggleFsi,
+  compact = false,
+  openOverlay,
+  setOpenOverlay,
+}) {
   const map = useMap();
   const divRef = useRef(null);
   const toggleRef = useRef(onToggleFsi);
   const compactRef = useRef(compact);
-  const [expanded, setExpanded] = useState(false);
 
   const switchRootRef = useRef(null);
   const switchContainerRef = useRef(null);
+
+  const collapsed = compact && openOverlay !== "legend";
 
   useEffect(() => {
     toggleRef.current = onToggleFsi;
@@ -1016,8 +1023,13 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
       legend.remove();
       divRef.current = null;
       if (switchRootRef.current) {
-        switchRootRef.current.unmount();
+        const root = switchRootRef.current;
         switchRootRef.current = null;
+        queueMicrotask(() => {
+          try {
+            root.unmount();
+          } catch {}
+        });
       }
     };
   }, [map]);
@@ -1027,11 +1039,15 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
     const div = divRef.current;
     if (!div) return;
     const t = getLegendTheme(compact);
-    const collapsed = compact && !expanded;
 
     if (switchRootRef.current) {
-      switchRootRef.current.unmount();
+      const root = switchRootRef.current;
       switchRootRef.current = null;
+      queueMicrotask(() => {
+        try {
+          root.unmount();
+        } catch {}
+      });
     }
     switchContainerRef.current = null;
 
@@ -1060,7 +1076,7 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
         </div>`;
       div.onclick = (e) => {
         L.DomEvent.stop(e);
-        setExpanded(true);
+        setOpenOverlay("legend");
       };
       return;
     }
@@ -1078,21 +1094,18 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
     const actions = document.createElement("div");
     actions.style.cssText = "display:flex;align-items:center;gap:6px;";
 
-    // Switch Container
     const toggleContainer = document.createElement("div");
     toggleContainer.style.display = "flex";
     toggleContainer.style.alignItems = "center";
     toggleContainer.style.minWidth = compact ? "32px" : "40px";
     toggleContainer.style.minHeight = compact ? "16px" : "20px";
 
-    // Prevent Leaflet from swallowing clicks
     L.DomEvent.disableClickPropagation(toggleContainer);
     L.DomEvent.disableScrollPropagation(toggleContainer);
 
     switchContainerRef.current = toggleContainer;
     actions.appendChild(toggleContainer);
 
-    // Initialize React Root ONCE for this layout
     switchRootRef.current = createRoot(toggleContainer);
 
     if (compact) {
@@ -1104,7 +1117,7 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
         "border:none;background:transparent;color:#666;font-size:12px;cursor:pointer;padding:2px 4px;line-height:1;";
       closeBtn.addEventListener("click", (e) => {
         L.DomEvent.stop(e);
-        setExpanded(false);
+        setOpenOverlay(null);
       });
       actions.appendChild(closeBtn);
     }
@@ -1117,7 +1130,7 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
     for (const [level, color] of Object.entries(RISK_LEVELS)) {
       const row = document.createElement("div");
       Object.assign(row.style, legendRowStyle(t));
-      row.className = "legend-row"; // Add class for state updates
+      row.className = "legend-row";
       row.style.transition = "opacity 0.15s ease";
 
       const swatch = document.createElement("div");
@@ -1132,11 +1145,10 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
       body.appendChild(row);
     }
     div.appendChild(body);
-  }, [compact, expanded]); // Removed fsiVisible to prevent DOM rebuilds
+  }, [compact, collapsed]);
 
-  // 3. Update visual state without destroying DOM (Fixes animation)
+  // 3. Update visual state without destroying DOM
   useEffect(() => {
-    // Update the React Switch (allows Shadcn's CSS transitions to work)
     if (switchRootRef.current) {
       switchRootRef.current.render(
         <div
@@ -1155,7 +1167,6 @@ function LegendControl({ fsiVisible, onToggleFsi, compact = false }) {
       );
     }
 
-    // Update row opacity
     if (divRef.current) {
       divRef.current.querySelectorAll(".legend-row").forEach((row) => {
         row.style.opacity = fsiVisible ? "1" : "0.4";
@@ -1387,6 +1398,7 @@ function MapSearchControl({
   onSelectLocation,
   onHome,
   compact = false,
+  openOverlay,
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
@@ -1416,6 +1428,11 @@ function MapSearchControl({
     document.addEventListener("click", onOut);
     return () => document.removeEventListener("click", onOut);
   }, []);
+
+  // add openOverlay prop, then:
+  useEffect(() => {
+    if (openOverlay !== null) setShowResults(false);
+  }, [openOverlay]);
 
   const doSearch = useCallback(async (q) => {
     if (!q || q.trim().length < 3) {
@@ -2705,9 +2722,11 @@ function FacilityTypeControl({
   facilitiesVisible,
   onToggleFacilitiesVisibility,
   compact = false,
+  openOverlay,
+  setOpenOverlay,
 }) {
   const ref = useRef(null);
-  const [open, setOpen] = useState(false);
+  const open = openOverlay === "facility";
 
   useEffect(() => {
     if (!ref.current) return;
@@ -2782,10 +2801,9 @@ function FacilityTypeControl({
       }}
     >
       {!open ? (
-        // ---------- Collapsed button ----------
         <button
           type="button"
-          onClick={() => setOpen(true)}
+          onClick={() => setOpenOverlay("facility")}
           aria-label="Open facility filter"
           title="Facility filter"
           style={{
@@ -2809,7 +2827,6 @@ function FacilityTypeControl({
           {!facilitiesVisible && <EyeOff size={13} color="#999" />}
         </button>
       ) : (
-        // ---------- Expanded chip card ----------
         <div
           style={{
             ...glass,
@@ -2841,7 +2858,7 @@ function FacilityTypeControl({
               {eyeBtn}
               <button
                 type="button"
-                onClick={() => setOpen(false)}
+                onClick={() => setOpenOverlay(null)}
                 aria-label="Collapse facility filter"
                 title="Collapse"
                 style={{
@@ -2892,14 +2909,19 @@ function FacilityTypeControl({
   );
 }
 
-function QGISLegend({ layerKey, config, stats, compact = false }) {
+function QGISLegend({
+  layerKey,
+  config,
+  stats,
+  compact = false,
+  openOverlay,
+  setOpenOverlay,
+}) {
   const map = useMap();
   const [host, setHost] = useState(null);
-  const [open, setOpen] = useState(false);
   const t = getLegendTheme(compact);
+  const open = openOverlay === "qgis";
 
-  // Register a control in the same corner as the FSI legend; Leaflet stacks
-  // controls in a corner top-to-bottom in the order they were added.
   useEffect(() => {
     const ctrl = L.control({ position: "topright" });
     ctrl.onAdd = () => {
@@ -2924,7 +2946,6 @@ function QGISLegend({ layerKey, config, stats, compact = false }) {
     stats.maxVal != null
   );
 
-  // Gap below the FSI legend; collapse the host completely when no layer is on.
   useEffect(() => {
     if (!host) return;
     host.style.marginTop = ready ? px(t.stackGap) : "0px";
@@ -2937,14 +2958,13 @@ function QGISLegend({ layerKey, config, stats, compact = false }) {
 
   const stops = buildLegendStops(config.colorScale, stats.minVal, stats.maxVal);
 
-  // ---------- Collapsed chip (mobile) ----------
   if (compact && !open) {
     return createPortal(
       <button
         type="button"
         onClick={(e) => {
           e.stopPropagation();
-          setOpen(true);
+          setOpenOverlay("qgis");
         }}
         title={`${config.name} legend`}
         aria-label={`Show ${config.name} legend`}
@@ -2991,7 +3011,6 @@ function QGISLegend({ layerKey, config, stats, compact = false }) {
     );
   }
 
-  // ---------- Full legend ----------
   return createPortal(
     <div style={legendBaseStyle(t)} onClick={(e) => e.stopPropagation()}>
       <div style={legendHeaderStyle(t)}>
@@ -3001,7 +3020,7 @@ function QGISLegend({ layerKey, config, stats, compact = false }) {
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              setOpen(false);
+              setOpenOverlay(null);
             }}
             aria-label="Collapse legend"
             title="Collapse"
@@ -4421,9 +4440,10 @@ function FloodMap() {
   const [facilityTypes, setFacilityTypes] = useState([]);
   const [selectedTypes, setSelectedTypes] = useState([]);
   const [facilitiesVisible, setFacilitiesVisible] = useState(true);
-  const [mapMode, setMapMode] = useState("none"); // ← was "marker"
+  const [mapMode, setMapMode] = useState("none");
   const [selectedBarangay, setSelectedBarangay] = useState(null);
-  const [selectedFacility, setSelectedFacility] = useState(null); // NEW
+  const [selectedFacility, setSelectedFacility] = useState(null);
+  const [openOverlay, setOpenOverlay] = useState(null); // "legend" | "qgis" | "facility" | null
 
   const isDesktop = useMediaQuery("(min-width: 1024px)");
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -4594,33 +4614,27 @@ function FloodMap() {
   };
 
   const handleModeChange = useCallback((newMode) => {
-    setMapMode(newMode); // "marker" | "barangay" | "none"
+    setMapMode(newMode);
     if (newMode !== "barangay") setSelectedBarangay(null);
-    setSelectedFacility(null); // Clear facility when changing mode
+    setSelectedFacility(null);
   }, []);
 
-  // 1. Declare these FIRST so handleSearchSelect can reference them
   const handleBarangaySelect = useCallback((b) => {
     setSelectedBarangay(b);
-    setSelectedFacility(null); // Clear facility when selecting a barangay
+    setSelectedFacility(null);
   }, []);
   const handleClearBarangay = useCallback(() => setSelectedBarangay(null), []);
 
-  // 2. Now declare handleSearchSelect
   const handleSearchSelect = useCallback(
     (latlng) => {
-      // Try to find if the searched location is inside a barangay
       if (barangayData) {
         const b = findBarangayForPoint(latlng, barangayData);
         if (b) {
-          // Focus the barangay and switch mode to behave exactly like Barangay Mode
           handleBarangaySelect(b);
           setMapMode("barangay");
-          return; // Skip the facility search
+          return;
         }
       }
-
-      // If it's not inside a barangay (or no data yet), do the regular marker search
       searchSelectRef.current?.(latlng);
     },
     [barangayData, handleBarangaySelect],
@@ -4657,7 +4671,6 @@ function FloodMap() {
     (selectedTypes.length === 0 ||
       selectedTypes.includes(EVACUATION_CENTER_TYPE));
 
-  // Calculate facilities inside the selected barangay boundary
   const facilitiesInSelectedBarangay = useMemo(() => {
     if (mapMode !== "barangay" || !selectedBarangay || !barangayData) return [];
 
@@ -4670,7 +4683,6 @@ function FloodMap() {
     const healthTypes = active.filter((t) => t !== EVACUATION_CENTER_TYPE);
     const evacSelected = active.includes(EVACUATION_CENTER_TYPE);
 
-    // Filter health facilities based on visibility and boundaries
     let visibleHealth = [];
     if (active.length === 0 || healthTypes.length > 0) {
       visibleHealth = facilities.filter((f) => {
@@ -4685,7 +4697,6 @@ function FloodMap() {
       });
     }
 
-    // Filter evacuation centers
     let visibleEvac = [];
     if (facilitiesVisible && (active.length === 0 || evacSelected)) {
       visibleEvac = evacuationCenters
@@ -4706,13 +4717,11 @@ function FloodMap() {
     effectiveHiddenFacilities,
   ]);
 
-  // Calculate loading state for barangays
   const isLoadingBarangays =
     mapMode === "barangay" && (!barangayData || fsiStatus !== null);
 
   const sidebarContent = (
     <div className="space-y-6">
-      {/* Added full title in a p tag */}
       <div className="pb-4 border-b border-slate-200">
         <p className="text-sm font-extrabold text-slate-900 leading-snug">
           <span className="block mb-1 text-xl text-blue-600 uppercase tracking-tight">
@@ -4765,14 +4774,11 @@ function FloodMap() {
           .leaflet-interactive { pointer-events: auto !important; }
           .info.legend { margin-bottom: 0; }
 
-          /* Bottom-right controls: one right-aligned column (zoom, locate, attribution) */
           .leaflet-bottom.leaflet-right { display: flex !important; flex-direction: column !important; align-items: flex-end !important; gap: 8px !important; margin-right: 12px !important; margin-bottom: 12px !important; }
           .leaflet-bottom.leaflet-right .leaflet-control { margin: 0 !important; float: none !important; }
 
-          /* Lift the controls above the mobile "Nearby Facilities" peek bar */
           .has-peek .leaflet-bottom.leaflet-right { margin-bottom: ${PEEK_HEIGHT + 12}px !important; }
 
-          /* ---- Fonts ---- */
           .leaflet-container,
           .leaflet-container .info.legend,
           .leaflet-container .info.legend *,
@@ -4785,18 +4791,15 @@ function FloodMap() {
             font-family: var(--font-body) !important;
           }
 
-          /* Panel and legend titles in the display face */
           .info.legend strong:first-child,
           .qgis-legend-control > div > div:first-child {
             font-family: var(--font-display) !important;
           }
 
-          /* Overlays that set Arial inline (search, mode switcher, facility filter, loader) */
           .relative.isolate [style*="Arial"] {
             font-family: var(--font-body) !important;
           }
 
-          /* Sidebar and drawer titles */
           [data-slot="card-title"],
           [data-slot="sheet-title"] {
             font-family: var(--font-display);
@@ -4865,7 +4868,7 @@ function FloodMap() {
             onLocationChange={handleLocationChange}
             mapMode={mapMode}
             onBarangaySelect={handleBarangaySelect}
-            onMapClick={() => setSelectedFacility(null)} // Clear selection on map click
+            onMapClick={() => setSelectedFacility(null)}
           />
           <MapControls
             onLocate={handleLocate}
@@ -4878,12 +4881,16 @@ function FloodMap() {
             fsiVisible={fsiVisible}
             onToggleFsi={handleToggleFsi}
             compact={compact}
+            openOverlay={openOverlay}
+            setOpenOverlay={setOpenOverlay}
           />
           <QGISLegend
             layerKey={activeLayerKey}
             config={activeLayerKey ? QGIS_LAYER_CONFIGS[activeLayerKey] : null}
             stats={activeLayerKey ? qgisLayerStats[activeLayerKey] : null}
             compact={compact}
+            openOverlay={openOverlay}
+            setOpenOverlay={setOpenOverlay}
           />
         </MapContainer>
 
@@ -4939,12 +4946,15 @@ function FloodMap() {
           facilitiesVisible={facilitiesVisible}
           onToggleFacilitiesVisibility={handleToggleFacilitiesVisibility}
           compact={compact}
+          openOverlay={openOverlay}
+          setOpenOverlay={setOpenOverlay}
         />
         <MapSearchControl
           cityBoundary={cityBoundary}
           onSelectLocation={handleSearchSelect}
           compact={compact}
           onHome={() => navigate("/")}
+          openOverlay={openOverlay}
         />
         <FsiLoadingIndicator
           status={fsiStatus}
