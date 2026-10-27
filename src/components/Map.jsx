@@ -4421,7 +4421,7 @@ function FloodMap() {
   const [facilityTypes, setFacilityTypes] = useState([]);
   const [selectedTypes, setSelectedTypes] = useState([]);
   const [facilitiesVisible, setFacilitiesVisible] = useState(true);
-  const [mapMode, setMapMode] = useState("marker");
+  const [mapMode, setMapMode] = useState("none"); // ← was "marker"
   const [selectedBarangay, setSelectedBarangay] = useState(null);
   const [selectedFacility, setSelectedFacility] = useState(null); // NEW
 
