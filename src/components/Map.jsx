@@ -4293,76 +4293,102 @@ function FsiLoadingIndicator({ status, visible = true, compact = false }) {
       ? "Computing flood susceptibility…"
       : "Loading barangay data…";
 
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      style={{
-        position: "absolute",
-        top: "50%",
-        left: "50%",
-        transform: "translate(-50%, -50%)",
-        zIndex: 2000,
-        pointerEvents: "none",
-        display: "flex",
-        flexDirection: "column",
-        gap: "8px",
-        minWidth: compact ? "190px" : "230px",
-        padding: "12px 16px",
-        backgroundColor: "rgba(255,255,255,0.95)",
-        backdropFilter: "blur(8px)",
-        WebkitBackdropFilter: "blur(8px)",
-        borderRadius: "14px",
-        border: "1px solid rgba(0,0,0,0.06)",
-        boxShadow: "0 2px 6px rgba(0,0,0,0.15), 0 8px 24px rgba(0,0,0,0.18)",
-        fontFamily: "Arial, sans-serif",
-      }}
-    >
-      <style>{`
-        @keyframes fsi-indeterminate {
-          0% { left: -40%; }
-          100% { left: 100%; }
-        }
-      `}</style>
-      <div className="flex items-center gap-2">
-        <Loader2
-          className="animate-spin"
-          size={16}
-          color="#2563eb"
-          strokeWidth={2.5}
-        />
-        <span
-          style={{
-            fontSize: compact ? "11px" : "12px",
-            fontWeight: 600,
-            color: "#1a1a1a",
-          }}
-        >
-          {label}
-        </span>
-      </div>
+  return createPortal(
+    <>
+      {/* Full-viewport backdrop: blocks every click, tap, wheel and drag. */}
       <div
+        aria-hidden="true"
         style={{
-          position: "relative",
-          height: "3px",
-          borderRadius: "2px",
-          overflow: "hidden",
-          backgroundColor: "rgba(37,99,235,0.15)",
+          position: "fixed",
+          inset: 0,
+          zIndex: 9997,
+          backgroundColor: "rgba(15, 23, 42, 0.35)",
+          backdropFilter: "blur(3px)",
+          WebkitBackdropFilter: "blur(3px)",
+          cursor: "progress",
+          pointerEvents: "auto",
+          touchAction: "none",
+        }}
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onTouchStart={(e) => e.stopPropagation()}
+        onWheel={(e) => e.stopPropagation()}
+        onContextMenu={(e) => e.preventDefault()}
+      />
+
+      {/* Centered loading card — sits above the backdrop. */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+        style={{
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%, -50%)",
+          zIndex: 9998,
+          pointerEvents: "none",
+          display: "flex",
+          flexDirection: "column",
+          gap: "8px",
+          minWidth: compact ? "190px" : "230px",
+          padding: "12px 16px",
+          backgroundColor: "rgba(255,255,255,0.97)",
+          backdropFilter: "blur(8px)",
+          WebkitBackdropFilter: "blur(8px)",
+          borderRadius: "14px",
+          border: "1px solid rgba(0,0,0,0.06)",
+          boxShadow: "0 2px 6px rgba(0,0,0,0.15), 0 8px 24px rgba(0,0,0,0.18)",
+          fontFamily: "Arial, sans-serif",
         }}
       >
+        <style>{`
+          @keyframes fsi-indeterminate {
+            0% { left: -40%; }
+            100% { left: 100%; }
+          }
+        `}</style>
+        <div className="flex items-center gap-2">
+          <Loader2
+            className="animate-spin"
+            size={16}
+            color="#2563eb"
+            strokeWidth={2.5}
+          />
+          <span
+            style={{
+              fontSize: compact ? "11px" : "12px",
+              fontWeight: 600,
+              color: "#1a1a1a",
+            }}
+          >
+            {label}
+          </span>
+        </div>
         <div
           style={{
-            position: "absolute",
-            top: 0,
-            bottom: 0,
-            width: "40%",
+            position: "relative",
+            height: "3px",
             borderRadius: "2px",
-            backgroundColor: "#2563eb",
-            animation: "fsi-indeterminate 1.1s ease-in-out infinite",
+            overflow: "hidden",
+            backgroundColor: "rgba(37,99,235,0.15)",
           }}
-        />
+        >
+          <div
+            style={{
+              position: "absolute",
+              top: 0,
+              bottom: 0,
+              width: "40%",
+              borderRadius: "2px",
+              backgroundColor: "#2563eb",
+              animation: "fsi-indeterminate 1.1s ease-in-out infinite",
+            }}
+          />
+        </div>
       </div>
-    </div>
+    </>,
+    document.body,
   );
 }
 
