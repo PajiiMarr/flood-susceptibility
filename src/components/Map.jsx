@@ -367,13 +367,6 @@ function getRandomRiskLevel() {
 
 const OSRM_BASE = "https://router.project-osrm.org";
 const NOMINATIM_BASE = "https://nominatim.openstreetmap.org";
-const OVERPASS_BASE = "https://overpass-api.de/api/interpreter";
-const OVERPASS_MIRRORS = [
-  "https://overpass-api.de/api/interpreter",
-  "https://overpass.kumi.systems/api/interpreter",
-  "https://overpass.private.coffee/api/interpreter",
-];
-
 const DEFAULT_VIEWBOX = "121.85,7.30,122.20,6.85";
 const MARITIME_BOUNDARY_CACHE_KEY = "zc_maritime_boundary_v1";
 const MARITIME_BOUNDARY_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -698,20 +691,14 @@ async function fetchZamboangaMaritimeBoundary() {
       out tags geom;
     `;
 
-    let data = null;
-    for (const base of OVERPASS_MIRRORS) {
-      try {
-        const res = await fetch(`${base}?data=${encodeURIComponent(query)}`);
-        if (res.ok) {
-          data = await res.json();
-          break;
-        }
-      } catch {
-        /* try next mirror */
-      }
-    }
-    if (!data) throw new Error("All Overpass mirrors failed");
+    // Call the Vercel serverless proxy instead of Overpass directly
+    const res = await fetch(`/api/overpass?data=${encodeURIComponent(query)}`);
 
+    if (!res.ok) {
+      throw new Error(`Proxy request failed: ${res.status}`);
+    }
+
+    const data = await res.json();
     const ways = data.elements || [];
     const seaWays = ways.filter(
       (w) =>
