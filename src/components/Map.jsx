@@ -368,6 +368,12 @@ function getRandomRiskLevel() {
 const OSRM_BASE = "https://router.project-osrm.org";
 const NOMINATIM_BASE = "https://nominatim.openstreetmap.org";
 const OVERPASS_BASE = "https://overpass-api.de/api/interpreter";
+const OVERPASS_MIRRORS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
+];
+
 const DEFAULT_VIEWBOX = "121.85,7.30,122.20,6.85";
 const MARITIME_BOUNDARY_CACHE_KEY = "zc_maritime_boundary_v1";
 const MARITIME_BOUNDARY_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -691,11 +697,21 @@ async function fetchZamboangaMaritimeBoundary() {
       way(r.city);
       out tags geom;
     `;
-    // Use GET request with URL parameters to avoid CORS preflight issues
-    const url = `${OVERPASS_BASE}?data=${encodeURIComponent(query)}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Overpass request failed: ${res.status}`);
-    const data = await res.json();
+
+    let data = null;
+    for (const base of OVERPASS_MIRRORS) {
+      try {
+        const res = await fetch(`${base}?data=${encodeURIComponent(query)}`);
+        if (res.ok) {
+          data = await res.json();
+          break;
+        }
+      } catch {
+        /* try next mirror */
+      }
+    }
+    if (!data) throw new Error("All Overpass mirrors failed");
+
     const ways = data.elements || [];
     const seaWays = ways.filter(
       (w) =>
@@ -2525,7 +2541,10 @@ function ZamboangaMask({
               break;
             }
           }
-          if (population == null) unmatched += 1;
+          if (population == null) {
+            unmatched += 1;
+            console.warn("Unmatched:", name);
+          }
           const fsi = fsiMap.get(name) || {};
           return {
             ...f,
@@ -2539,6 +2558,7 @@ function ZamboangaMask({
             },
           };
         });
+
         if (unmatched > 0)
           console.warn(
             `Population data: ${unmatched} barangay(s) unmatched in PSA spreadsheet.`,
@@ -2639,8 +2659,6 @@ function ZamboangaMask({
         }).addTo(map);
         barangayLayerRef.current = layer;
       } finally {
-        // A cancelled run (StrictMode / model change) must not clear the
-        // status of the run that replaced it.
         if (!cancelled) onFsiStatusChange?.(null);
       }
     };
@@ -4307,9 +4325,10 @@ function FsiLoadingIndicator({ status, visible = true, compact = false }) {
       ? "Computing flood susceptibility…"
       : "Loading barangay data…";
 
+  const risk = ["#91bfdb", "#fee090", "#fc8d59", "#d73027"];
+
   return createPortal(
     <>
-      {/* Full-viewport backdrop: blocks every click, tap, wheel and drag. */}
       <div
         aria-hidden="true"
         style={{
@@ -4330,7 +4349,6 @@ function FsiLoadingIndicator({ status, visible = true, compact = false }) {
         onContextMenu={(e) => e.preventDefault()}
       />
 
-      {/* Centered loading card — sits above the backdrop. */}
       <div
         role="status"
         aria-live="polite"
@@ -4344,12 +4362,12 @@ function FsiLoadingIndicator({ status, visible = true, compact = false }) {
           pointerEvents: "none",
           display: "flex",
           flexDirection: "column",
-          gap: "8px",
-          minWidth: compact ? "190px" : "230px",
-          padding: "12px 16px",
+          alignItems: "center",
+          gap: "12px",
+          width: compact ? "220px" : "260px", // Fixed width
+          boxSizing: "border-box", // Prevents padding from expanding the width
+          padding: compact ? "16px 20px" : "20px 28px",
           backgroundColor: "rgba(255,255,255,0.97)",
-          backdropFilter: "blur(8px)",
-          WebkitBackdropFilter: "blur(8px)",
           borderRadius: "14px",
           border: "1px solid rgba(0,0,0,0.06)",
           boxShadow: "0 2px 6px rgba(0,0,0,0.15), 0 8px 24px rgba(0,0,0,0.18)",
@@ -4357,49 +4375,49 @@ function FsiLoadingIndicator({ status, visible = true, compact = false }) {
         }}
       >
         <style>{`
-          @keyframes fsi-indeterminate {
-            0% { left: -40%; }
-            100% { left: 100%; }
+          @keyframes fsi-rise {
+            0%, 100% { transform: translateY(0); opacity: .35; }
+            50%      { transform: translateY(-8px); opacity: 1; }
+          }
+          @media (prefers-reduced-motion: reduce) {
+            .fsi-bar { animation: none !important; opacity: 1 !important; }
           }
         `}</style>
-        <div className="flex items-center gap-2">
-          <Loader2
-            className="animate-spin"
-            size={16}
-            color="#2563eb"
-            strokeWidth={2.5}
-          />
-          <span
-            style={{
-              fontSize: compact ? "11px" : "12px",
-              fontWeight: 600,
-              color: "#1a1a1a",
-            }}
-          >
-            {label}
-          </span>
-        </div>
+
+        {/* Four bars rising in sequence, one per risk level */}
         <div
           style={{
-            position: "relative",
-            height: "3px",
-            borderRadius: "2px",
-            overflow: "hidden",
-            backgroundColor: "rgba(37,99,235,0.15)",
+            display: "flex",
+            alignItems: "flex-end",
+            gap: "6px",
+            height: "28px",
           }}
         >
-          <div
-            style={{
-              position: "absolute",
-              top: 0,
-              bottom: 0,
-              width: "40%",
-              borderRadius: "2px",
-              backgroundColor: "#2563eb",
-              animation: "fsi-indeterminate 1.1s ease-in-out infinite",
-            }}
-          />
+          {risk.map((color, i) => (
+            <span
+              key={color}
+              className="fsi-bar"
+              style={{
+                width: "10px",
+                height: `${12 + i * 4}px`,
+                borderRadius: "3px",
+                backgroundColor: color,
+                animation: `fsi-rise 1.2s ease-in-out ${i * 0.15}s infinite`,
+              }}
+            />
+          ))}
         </div>
+
+        <span
+          style={{
+            fontSize: compact ? "11px" : "12px",
+            fontWeight: 600,
+            color: "#1a1a1a",
+            textAlign: "center",
+          }}
+        >
+          {label}
+        </span>
       </div>
     </>,
     document.body,
