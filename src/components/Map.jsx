@@ -686,16 +686,14 @@ async function fetchZamboangaMaritimeBoundary() {
 
   try {
     const query = `
-      [out:json][timeout:60];
+      [out:json][timeout:25];
       relation["type"="boundary"]["boundary"="administrative"]["admin_level"="6"]["name"="Zamboanga City"]->.city;
       way(r.city);
       out tags geom;
     `;
-    const res = await fetch(OVERPASS_BASE, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: "data=" + encodeURIComponent(query),
-    });
+    // Use GET request with URL parameters to avoid CORS preflight issues
+    const url = `${OVERPASS_BASE}?data=${encodeURIComponent(query)}`;
+    const res = await fetch(url);
     if (!res.ok) throw new Error(`Overpass request failed: ${res.status}`);
     const data = await res.json();
     const ways = data.elements || [];
@@ -984,18 +982,17 @@ function LegendControl({
   fsiVisible,
   onToggleFsi,
   compact = false,
-  openOverlay,
-  setOpenOverlay,
+  legendOpen,
+  setLegendOpen,
 }) {
   const map = useMap();
   const divRef = useRef(null);
   const toggleRef = useRef(onToggleFsi);
   const compactRef = useRef(compact);
-
   const switchRootRef = useRef(null);
   const switchContainerRef = useRef(null);
 
-  const collapsed = compact && openOverlay !== "legend";
+  const collapsed = compact && !legendOpen;
 
   useEffect(() => {
     toggleRef.current = onToggleFsi;
@@ -1004,7 +1001,6 @@ function LegendControl({
     compactRef.current = compact;
   }, [compact]);
 
-  // 1. Create Leaflet control container
   useEffect(() => {
     const legend = L.control({ position: "topright" });
     legend.onAdd = () => {
@@ -1034,7 +1030,6 @@ function LegendControl({
     };
   }, [map]);
 
-  // 2. Build UI layout (only rebuild when structure changes)
   useEffect(() => {
     const div = divRef.current;
     if (!div) return;
@@ -1058,7 +1053,6 @@ function LegendControl({
     div.onclick = null;
     div.innerHTML = "";
 
-    // ---------- Collapsed pill (mobile) ----------
     if (collapsed) {
       div.style.width = "auto";
       div.style.padding = "7px 10px";
@@ -1076,12 +1070,11 @@ function LegendControl({
         </div>`;
       div.onclick = (e) => {
         L.DomEvent.stop(e);
-        setOpenOverlay("legend");
+        setLegendOpen(true);
       };
       return;
     }
 
-    // ---------- Full legend ----------
     const header = document.createElement("div");
     Object.assign(header.style, legendHeaderStyle(t));
     header.style.alignItems = "center";
@@ -1105,7 +1098,6 @@ function LegendControl({
 
     switchContainerRef.current = toggleContainer;
     actions.appendChild(toggleContainer);
-
     switchRootRef.current = createRoot(toggleContainer);
 
     if (compact) {
@@ -1117,7 +1109,7 @@ function LegendControl({
         "border:none;background:transparent;color:#666;font-size:12px;cursor:pointer;padding:2px 4px;line-height:1;";
       closeBtn.addEventListener("click", (e) => {
         L.DomEvent.stop(e);
-        setOpenOverlay(null);
+        setLegendOpen(false);
       });
       actions.appendChild(closeBtn);
     }
@@ -1145,9 +1137,8 @@ function LegendControl({
       body.appendChild(row);
     }
     div.appendChild(body);
-  }, [compact, collapsed]);
+  }, [compact, collapsed, setLegendOpen]);
 
-  // 3. Update visual state without destroying DOM
   useEffect(() => {
     if (switchRootRef.current) {
       switchRootRef.current.render(
@@ -1555,6 +1546,7 @@ function MapSearchControl({
         </div>
         {showResults && (
           <div
+            className="overlay-animate-in"
             style={{
               position: "absolute",
               top: "calc(100% + 6px)",
@@ -1568,6 +1560,7 @@ function MapSearchControl({
               border: "1px solid rgba(255,255,255,0.5)",
               maxHeight: compact ? "40vh" : "260px",
               overflowY: "auto",
+              transformOrigin: "top center",
             }}
           >
             {loading ? (
@@ -2828,11 +2821,13 @@ function FacilityTypeControl({
         </button>
       ) : (
         <div
+          className="overlay-animate-in"
           style={{
             ...glass,
             padding: "8px",
             minWidth: "150px",
             maxWidth: compact ? "calc(100vw - 24px - 176px - 8px)" : "340px",
+            transformOrigin: "top left",
           }}
         >
           <div
@@ -2914,13 +2909,13 @@ function QGISLegend({
   config,
   stats,
   compact = false,
-  openOverlay,
-  setOpenOverlay,
+  qgisOpen,
+  setQgisOpen,
 }) {
   const map = useMap();
   const [host, setHost] = useState(null);
   const t = getLegendTheme(compact);
-  const open = openOverlay === "qgis";
+  const open = qgisOpen;
 
   useEffect(() => {
     const ctrl = L.control({ position: "topright" });
@@ -2964,7 +2959,7 @@ function QGISLegend({
         type="button"
         onClick={(e) => {
           e.stopPropagation();
-          setOpenOverlay("qgis");
+          setQgisOpen(true);
         }}
         title={`${config.name} legend`}
         aria-label={`Show ${config.name} legend`}
@@ -3020,7 +3015,7 @@ function QGISLegend({
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              setOpenOverlay(null);
+              setQgisOpen(false);
             }}
             aria-label="Collapse legend"
             title="Collapse"
@@ -4443,7 +4438,9 @@ function FloodMap() {
   const [mapMode, setMapMode] = useState("none");
   const [selectedBarangay, setSelectedBarangay] = useState(null);
   const [selectedFacility, setSelectedFacility] = useState(null);
-  const [openOverlay, setOpenOverlay] = useState(null); // "legend" | "qgis" | "facility" | null
+  const [openOverlay, setOpenOverlay] = useState(null); // "facility" | null
+  const [legendOpen, setLegendOpen] = useState(false);
+  const [qgisOpen, setQgisOpen] = useState(false);
 
   const isDesktop = useMediaQuery("(min-width: 1024px)");
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -4804,6 +4801,15 @@ function FloodMap() {
           [data-slot="sheet-title"] {
             font-family: var(--font-display);
           }
+
+          @keyframes overlay-pop {
+            from { opacity: 0; transform: scale(0.94); }
+            to   { opacity: 1; transform: scale(1); }
+          }
+          .overlay-animate-in {
+            animation: overlay-pop 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+            transform-origin: top right;
+          }
         `}</style>
 
         <MapContainer
@@ -4881,16 +4887,16 @@ function FloodMap() {
             fsiVisible={fsiVisible}
             onToggleFsi={handleToggleFsi}
             compact={compact}
-            openOverlay={openOverlay}
-            setOpenOverlay={setOpenOverlay}
+            legendOpen={legendOpen}
+            setLegendOpen={setLegendOpen}
           />
           <QGISLegend
             layerKey={activeLayerKey}
             config={activeLayerKey ? QGIS_LAYER_CONFIGS[activeLayerKey] : null}
             stats={activeLayerKey ? qgisLayerStats[activeLayerKey] : null}
             compact={compact}
-            openOverlay={openOverlay}
-            setOpenOverlay={setOpenOverlay}
+            qgisOpen={qgisOpen}
+            setQgisOpen={setQgisOpen}
           />
         </MapContainer>
 
