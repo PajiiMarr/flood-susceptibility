@@ -206,37 +206,49 @@ const estimateLegendHeight = (t, rows) =>
   rows * t.swatchSize +
   Math.max(0, rows - 1) * t.rowGap;
 
-// ==========================================
-// FACTOR INFO MAP (Human-readable names)
-// ==========================================
 const FACTOR_INFO = {
-  dem: { label: "Surface Elevation", desc: "Ground height above sea level" },
-  slope: { label: "Terrain Slope", desc: "Steepness of the terrain" },
-  aspect: { label: "Slope Direction", desc: "Direction the slope faces" },
+  dem: {
+    label: "DEM",
+    desc: "Digital Elevation Model — ground height above sea level",
+  },
+  slope: {
+    label: "Slope",
+    desc: "Steepness of the terrain",
+  },
+  aspect: {
+    label: "Aspect",
+    desc: "Direction the slope faces",
+  },
   twi: {
-    label: "Topographic Wetness",
-    desc: "Tendency of terrain to accumulate water",
+    label: "TWI",
+    desc: "Topographic Wetness Index — tendency of terrain to accumulate water",
   },
   hand: {
-    label: "Height Above Drainage",
-    desc: "Elevation above the nearest stream",
+    label: "HAND",
+    desc: "Height Above Nearest Drainage — elevation above the nearest stream",
   },
   flow_accumulation: {
     label: "Flow Accumulation",
     desc: "Volume of water flowing through the area",
   },
   distance_to_river: {
-    label: "River Distance",
+    label: "Distance to River",
     desc: "How far the point is from the nearest river",
   },
   drainage_density: {
     label: "Drainage Density",
     desc: "Stream length per unit area",
   },
-  chirps: { label: "CHIRPS Rainfall", desc: "Satellite rainfall estimate" },
-  gpm: { label: "GPM Rainfall", desc: "Global precipitation measurement" },
+  chirps: {
+    label: "CHIRPS",
+    desc: "Climate Hazards Group InfraRed Precipitation with Station data",
+  },
+  gpm: {
+    label: "GPM",
+    desc: "Global Precipitation Measurement",
+  },
   wetness_index: {
-    label: "Terrain Wetness Index",
+    label: "Wetness Index",
     desc: "Wetness weighted by water flow",
   },
   flood_concentration: {
@@ -244,23 +256,23 @@ const FACTOR_INFO = {
     desc: "Runoff accumulated near rivers",
   },
   twi_hand_ratio: {
-    label: "Wetness-to-Drainage Ratio",
-    desc: "Ratio of wetness to elevation above drainage",
+    label: "TWI-HAND Ratio",
+    desc: "Ratio of TWI to HAND",
   },
   northness: {
-    label: "North-Facing Slope",
+    label: "Northness",
     desc: "How much the slope faces north",
   },
   eastness: {
-    label: "East-Facing Slope",
+    label: "Eastness",
     desc: "How much the slope faces east",
   },
   relative_elevation: {
-    label: "Relative Terrain Height",
+    label: "Relative Elevation",
     desc: "Low-lying areas relative to overall elevation",
   },
   slope_aspect: {
-    label: "Slope Orientation",
+    label: "Slope-Aspect",
     desc: "Combined effect of steepness and direction",
   },
   river_proximity: {
@@ -268,7 +280,7 @@ const FACTOR_INFO = {
     desc: "Inverse distance to river (higher = closer)",
   },
   floodplain_index: {
-    label: "Floodplain Susceptibility",
+    label: "Floodplain Index",
     desc: "Flat, low areas near water",
   },
   rainfall_intensity: {
@@ -276,35 +288,35 @@ const FACTOR_INFO = {
     desc: "Combined rainfall from CHIRPS + GPM",
   },
   rainfall_ratio: {
-    label: "Rainfall Source Ratio",
+    label: "Rainfall Ratio",
     desc: "Balance between the two rainfall sources",
   },
   rainfall_wetness: {
-    label: "Rain-Coupled Wetness",
+    label: "Rainfall-Wetness",
     desc: "Rainfall interacting with terrain wetness",
   },
   rainfall_flow: {
-    label: "Rain-Driven Runoff",
+    label: "Rainfall-Flow",
     desc: "Rainfall combined with flow accumulation",
   },
   twi_hand: {
-    label: "Combined Terrain Wetness",
+    label: "TWI-HAND",
     desc: "Interaction between wetness and elevation",
   },
   dem_river_ratio: {
-    label: "Elevation-to-River Proximity",
+    label: "DEM-River Ratio",
     desc: "Height relative to river distance",
   },
   hand_dem_ratio: {
-    label: "Lowland Relative Elevation",
+    label: "HAND-DEM Ratio",
     desc: "Low-lying areas relative to total elevation",
   },
   flow_dist_ratio: {
-    label: "Flow-to-River Distance",
+    label: "Flow-Dist Ratio",
     desc: "Water flow relative to distance from river",
   },
   hand_squared: {
-    label: "Extreme Lowland Indicator",
+    label: "HAND Squared",
     desc: "Nonlinear elevation effect amplifying extreme lows",
   },
 };
