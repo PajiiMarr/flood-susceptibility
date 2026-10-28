@@ -4438,6 +4438,8 @@ function FloodMap() {
   const [mapMode, setMapMode] = useState("none");
   const [selectedBarangay, setSelectedBarangay] = useState(null);
   const [selectedFacility, setSelectedFacility] = useState(null);
+
+  // Overlay states
   const [openOverlay, setOpenOverlay] = useState(null); // "facility" | null
   const [legendOpen, setLegendOpen] = useState(false);
   const [qgisOpen, setQgisOpen] = useState(false);
@@ -4801,15 +4803,6 @@ function FloodMap() {
           [data-slot="sheet-title"] {
             font-family: var(--font-display);
           }
-
-          @keyframes overlay-pop {
-            from { opacity: 0; transform: scale(0.94); }
-            to   { opacity: 1; transform: scale(1); }
-          }
-          .overlay-animate-in {
-            animation: overlay-pop 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
-            transform-origin: top right;
-          }
         `}</style>
 
         <MapContainer
@@ -4874,7 +4867,10 @@ function FloodMap() {
             onLocationChange={handleLocationChange}
             mapMode={mapMode}
             onBarangaySelect={handleBarangaySelect}
-            onMapClick={() => setSelectedFacility(null)}
+            onMapClick={() => {
+              setSelectedFacility(null);
+              setOpenOverlay(null);
+            }}
           />
           <MapControls
             onLocate={handleLocate}
@@ -4967,18 +4963,26 @@ function FloodMap() {
           visible={fsiVisible}
           compact={compact}
         />
-        <BaseLayerSwitcher
-          baseLayer={baseLayer}
-          onBaseLayerChange={setBaseLayer}
-          layerConfigs={QGIS_LAYER_CONFIGS}
-          activeLayers={activeQGISLayers}
-          onLayerToggle={handleLayerToggle}
-          layerErrors={qgisLayerErrors}
-          layerLoading={qgisLayerLoading}
-          layerProgress={qgisLayerProgress}
-          compact={compact}
-          bottomOffset={showPeek ? PEEK_HEIGHT : 0}
-        />
+
+        {/* 
+          ADDED onClickCapture: 
+          This ensures that if the user clicks the Layers button, 
+          it will close the FacilityTypeControl automatically.
+        */}
+        <div onClickCapture={() => setOpenOverlay(null)}>
+          <BaseLayerSwitcher
+            baseLayer={baseLayer}
+            onBaseLayerChange={setBaseLayer}
+            layerConfigs={QGIS_LAYER_CONFIGS}
+            activeLayers={activeQGISLayers}
+            onLayerToggle={handleLayerToggle}
+            layerErrors={qgisLayerErrors}
+            layerLoading={qgisLayerLoading}
+            layerProgress={qgisLayerProgress}
+            compact={compact}
+            bottomOffset={showPeek ? PEEK_HEIGHT : 0}
+          />
+        </div>
       </div>
 
       {isDesktop && (
