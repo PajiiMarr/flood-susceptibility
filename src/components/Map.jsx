@@ -6,15 +6,21 @@ import { createPortal } from "react-dom";
 import BaseLayerSwitcher, { BASE_LAYERS } from "./BaseLayerSwitcher";
 import { supabase } from "../lib/supabaseClient";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
-import "leaflet/dist/leaflet.css";
+
+// Leaflet & MarkerCluster (Imported exactly once)
 import L from "leaflet";
-import booleanPointInPolygon from "@turf/boolean-point-in-polygon";
-import * as XLSX from "xlsx";
+import "leaflet/dist/leaflet.css";
+import "leaflet.markercluster";
 import "leaflet.markercluster/dist/MarkerCluster.css";
 import "leaflet.markercluster/dist/MarkerCluster.Default.css";
-import MarkerClusterGroup from "leaflet.markercluster";
+
+// Utility libraries
+import booleanPointInPolygon from "@turf/boolean-point-in-polygon";
+import * as XLSX from "xlsx";
 import * as geotiff from "geotiff";
 import proj4 from "proj4";
+
+// UI Components
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,6 +58,7 @@ import {
   Hexagon,
   SlidersHorizontal,
   Home,
+  LogIn,
 } from "lucide-react";
 
 export const EVACUATION_CENTER_TYPE = "Evacuation Center";
@@ -994,8 +1001,10 @@ function MapResizer() {
 }
 
 function LegendControl({
-  fsiVisible,
+  fsiVisible, // barangay choropleth toggle
   onToggleFsi,
+  rasterVisible, // server susceptibility raster toggle
+  onToggleRaster,
   compact = false,
   legendOpen,
   setLegendOpen,
@@ -1003,6 +1012,7 @@ function LegendControl({
   const map = useMap();
   const divRef = useRef(null);
   const toggleRef = useRef(onToggleFsi);
+  const rasterToggleRef = useRef(onToggleRaster);
   const compactRef = useRef(compact);
   const switchRootRef = useRef(null);
   const switchContainerRef = useRef(null);
@@ -1012,6 +1022,9 @@ function LegendControl({
   useEffect(() => {
     toggleRef.current = onToggleFsi;
   }, [onToggleFsi]);
+  useEffect(() => {
+    rasterToggleRef.current = onToggleRaster;
+  }, [onToggleRaster]);
   useEffect(() => {
     compactRef.current = compact;
   }, [compact]);
@@ -1077,9 +1090,10 @@ function LegendControl({
             `<span style="width:8px;height:8px;border-radius:50%;background:${c};display:inline-block;"></span>`,
         )
         .join("");
+      const rasterDot = `<span title="Raster" style="width:8px;height:8px;border-radius:2px;background:${rasterVisible ? "#059669" : "#cbd5e1"};display:inline-block;margin-left:4px;"></span>`;
       div.innerHTML = `
-        <div style="display:flex;align-items:center;gap:6px;opacity:${fsiVisible ? 1 : 0.5};">
-          <span style="display:flex;gap:3px;">${dots}</span>
+        <div style="display:flex;align-items:center;gap:6px;opacity:${fsiVisible || rasterVisible ? 1 : 0.5};">
+          <span style="display:flex;gap:3px;">${dots}${rasterDot}</span>
           <strong style="font-size:11px;">FSI</strong>
           <span style="font-size:9px;color:#777;">▾</span>
         </div>`;
@@ -1105,8 +1119,7 @@ function LegendControl({
     const toggleContainer = document.createElement("div");
     toggleContainer.style.display = "flex";
     toggleContainer.style.alignItems = "center";
-    toggleContainer.style.minWidth = compact ? "32px" : "40px";
-    toggleContainer.style.minHeight = compact ? "16px" : "20px";
+    toggleContainer.style.gap = compact ? "4px" : "6px";
 
     L.DomEvent.disableClickPropagation(toggleContainer);
     L.DomEvent.disableScrollPropagation(toggleContainer);
@@ -1152,23 +1165,63 @@ function LegendControl({
       body.appendChild(row);
     }
     div.appendChild(body);
-  }, [compact, collapsed, setLegendOpen]);
+  }, [compact, collapsed, setLegendOpen, rasterVisible, fsiVisible]);
 
   useEffect(() => {
     if (switchRootRef.current) {
       switchRootRef.current.render(
         <div
           onClick={(e) => e.stopPropagation()}
-          style={{ display: "flex", alignItems: "center" }}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: compact ? "3px" : "4px",
+          }}
         >
-          <Switch
-            checked={fsiVisible}
-            onCheckedChange={() => toggleRef.current?.()}
-            className={cn(
-              "data-[state=checked]:bg-blue-600 data-[state=unchecked]:bg-slate-300 transition-colors",
-              compact ? "h-4 w-8" : "h-5 w-9",
-            )}
-          />
+          <label
+            title="Barangay choropleth (FSI colors)"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "4px",
+              cursor: "pointer",
+              fontSize: compact ? "8px" : "9px",
+              color: "#444",
+              whiteSpace: "nowrap",
+            }}
+          >
+            <Switch
+              checked={fsiVisible}
+              onCheckedChange={() => toggleRef.current?.()}
+              className={cn(
+                "data-[state=checked]:bg-blue-600 data-[state=unchecked]:bg-slate-300 transition-colors",
+                compact ? "h-3.5 w-7" : "h-4 w-8",
+              )}
+            />
+            Choropleth
+          </label>
+          <label
+            title="Server-generated susceptibility raster"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "4px",
+              cursor: "pointer",
+              fontSize: compact ? "8px" : "9px",
+              color: "#444",
+              whiteSpace: "nowrap",
+            }}
+          >
+            <Switch
+              checked={rasterVisible}
+              onCheckedChange={() => rasterToggleRef.current?.()}
+              className={cn(
+                "data-[state=checked]:bg-emerald-600 data-[state=unchecked]:bg-slate-300 transition-colors",
+                compact ? "h-3.5 w-7" : "h-4 w-8",
+              )}
+            />
+            Raster
+          </label>
         </div>,
       );
     }
@@ -1178,7 +1231,7 @@ function LegendControl({
         row.style.opacity = fsiVisible ? "1" : "0.4";
       });
     }
-  }, [fsiVisible, compact]);
+  }, [fsiVisible, rasterVisible, compact]);
 
   return null;
 }
@@ -1435,7 +1488,6 @@ function MapSearchControl({
     return () => document.removeEventListener("click", onOut);
   }, []);
 
-  // add openOverlay prop, then:
   useEffect(() => {
     if (openOverlay !== null) setShowResults(false);
   }, [openOverlay]);
@@ -4176,6 +4228,150 @@ function OriginCard({ origin }) {
   );
 }
 
+function FSIRasterLayer({ model, visible, cityBoundary }) {
+  const map = useMap();
+  const layerRef = useRef(null);
+  const breaksRef = useRef([0.654, 0.746, 0.782]); // Fallback
+
+  // Fetch the actual risk breaks from the backend on mount
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/models`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.risk_mapping) {
+          // Extract the upper bounds (excluding the final 1.0)
+          const b = data.risk_mapping.map((r) => r.upper).slice(0, 3);
+          if (b.length === 3) breaksRef.current = b;
+        }
+      })
+      .catch((err) => console.warn("Could not fetch risk breaks:", err));
+  }, []);
+
+  useEffect(() => {
+    if (!visible || !model || !cityBoundary) {
+      if (layerRef.current) map.removeLayer(layerRef.current);
+      return;
+    }
+
+    const fetchRaster = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/raster/${model}`);
+        if (!res.ok) throw new Error("Failed to fetch TIFF");
+        const arrayBuffer = await res.arrayBuffer();
+
+        const tiff = await geotiff.fromArrayBuffer(arrayBuffer);
+        const image = await tiff.getImage();
+        const bbox = image.getBoundingBox();
+        const width = image.getWidth();
+        const height = image.getHeight();
+        const data = await image.readRasters();
+        const values = data[0];
+
+        let noDataValue = null;
+        try {
+          const nd = image.getGDALNoData ? image.getGDALNoData() : null;
+          if (nd !== null && nd !== undefined && !Number.isNaN(Number(nd)))
+            noDataValue = Number(nd);
+        } catch {}
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        const imgData = ctx.createImageData(width, height);
+
+        const [t1, t2, t3] = breaksRef.current;
+
+        for (let i = 0; i < values.length; i++) {
+          const idx = i * 4;
+          const val = values[i];
+
+          // Skip NoData, negative values (ocean), and undefined
+          if (
+            val === null ||
+            val === undefined ||
+            val < 0 ||
+            (noDataValue !== null && val === noDataValue)
+          ) {
+            imgData.data[idx + 3] = 0;
+            continue;
+          }
+
+          let color;
+          // Use backend thresholds
+          if (val < t1)
+            color = [145, 191, 219]; // Low
+          else if (val < t2)
+            color = [254, 224, 144]; // Medium
+          else if (val < t3)
+            color = [252, 141, 89]; // High
+          else color = [215, 48, 39]; // Very High
+
+          imgData.data[idx] = color[0];
+          imgData.data[idx + 1] = color[1];
+          imgData.data[idx + 2] = color[2];
+          imgData.data[idx + 3] = 180; // Opacity
+        }
+        ctx.putImageData(imgData, 0, 0);
+
+        // --- CLIP TO BOUNDARY ---
+        let outCanvas = canvas;
+        const rings = getClipRingsFromBoundary(
+          cityBoundary,
+          bbox,
+          width,
+          height,
+        );
+        if (rings.length > 0) {
+          const cc = document.createElement("canvas");
+          cc.width = width;
+          cc.height = height;
+          const cctx = cc.getContext("2d");
+          cctx.save();
+          cctx.beginPath();
+          rings.forEach((ring) => {
+            ring.forEach(([x, y], i) => {
+              if (i === 0) cctx.moveTo(x, y);
+              else cctx.lineTo(x, y);
+            });
+            cctx.closePath();
+          });
+          cctx.clip("evenodd");
+          cctx.drawImage(canvas, 0, 0);
+          cctx.restore();
+          outCanvas = cc;
+        }
+
+        const dataUrl = outCanvas.toDataURL("image/png");
+
+        const [west, south, east, north] = bbox;
+        const bl = utmToLatLng(west, south);
+        const tr = utmToLatLng(east, north);
+        const bounds = [
+          [bl.lat, bl.lng],
+          [tr.lat, tr.lng],
+        ];
+
+        if (layerRef.current) map.removeLayer(layerRef.current);
+        layerRef.current = L.imageOverlay(dataUrl, bounds, {
+          opacity: 0.85,
+          pane: "fsi-pane",
+        }).addTo(map);
+      } catch (err) {
+        console.error("[FSI Raster] Error:", err);
+      }
+    };
+
+    fetchRaster();
+
+    return () => {
+      if (layerRef.current) map.removeLayer(layerRef.current);
+    };
+  }, [map, model, visible, cityBoundary]);
+
+  return null;
+}
+
 function FsiNotice({ originBarangay }) {
   if (!originBarangay) return null;
   const { name, risk, population } = originBarangay;
@@ -4436,6 +4632,7 @@ function FloodMap() {
   const [qgisLayerLoading, setQgisLayerLoading] = useState({});
   const [qgisLayerStats, setQgisLayerStats] = useState({});
   const [fsiVisible, setFsiVisible] = useState(true);
+  const [rasterVisible, setRasterVisible] = useState(false); // Default to false so choropleth is visible
   const [baseLayer, setBaseLayer] = useState("satellite");
   const [fsiStatus, setFsiStatus] = useState("boundaries");
   const navigate = useNavigate();
@@ -4666,6 +4863,7 @@ function FloodMap() {
     setFacilitiesVisible((v) => !v);
   }, []);
   const handleToggleFsi = useCallback(() => setFsiVisible((v) => !v), []);
+  const handleToggleRaster = useCallback(() => setRasterVisible((v) => !v), []);
 
   const effectiveHiddenFacilities = useMemo(() => {
     const hidden = new Set();
@@ -4738,14 +4936,24 @@ function FloodMap() {
 
   const sidebarContent = (
     <div className="space-y-6">
-      <div className="pb-4 border-b border-slate-200">
-        <p className="text-sm font-extrabold text-slate-900 leading-snug">
-          <span className="block mb-1 text-xl text-blue-600 uppercase tracking-tight">
-            ABENIDA
-          </span>
-          Mapping High-Resolution Flood Susceptibility in Zamboanga City Using
-          Spatial Machine Learning
-        </p>
+      <div className="pb-4 border-b border-slate-200 flex justify-between items-start gap-4">
+        <div>
+          <p className="text-sm font-extrabold text-slate-900 leading-snug">
+            <span className="block mb-1 text-xl text-blue-600 uppercase tracking-tight">
+              ABENIDA
+            </span>
+            Mapping High-Resolution Flood Susceptibility in Zamboanga City Using
+            Spatial Machine Learning
+          </p>
+        </div>
+        <Button
+          onClick={() => navigate("/login")}
+          size="sm"
+          className="bg-blue-600 hover:bg-blue-700 text-white flex-shrink-0 flex items-center gap-2"
+        >
+          <LogIn size={14} />
+          Login
+        </Button>
       </div>
 
       <FacilityDetailsPanel
@@ -4837,10 +5045,16 @@ function FloodMap() {
           />
           <CustomPanes />
           <MapResizer />
+          {/* Render the continuous raster here */}
+          <FSIRasterLayer
+            model={DEFAULT_FSI_MODEL}
+            visible={rasterVisible}
+            cityBoundary={cityBoundary}
+          />
           <ZamboangaMask
             onBoundaryLoaded={handleBoundaryLoaded}
             onBarangaysLoaded={handleBarangaysLoaded}
-            rasterActive={hasQGISLayersActive}
+            rasterActive={rasterVisible} // <-- FIX: Ties choropleth opacity to the raster toggle
             fsiVisible={fsiVisible}
             mapMode={mapMode}
             selectedBarangayName={selectedBarangay?.name || null}
@@ -4899,6 +5113,8 @@ function FloodMap() {
           <LegendControl
             fsiVisible={fsiVisible}
             onToggleFsi={handleToggleFsi}
+            rasterVisible={rasterVisible}
+            onToggleRaster={handleToggleRaster}
             compact={compact}
             legendOpen={legendOpen}
             setLegendOpen={setLegendOpen}
@@ -4981,11 +5197,6 @@ function FloodMap() {
           compact={compact}
         />
 
-        {/* 
-          ADDED onClickCapture: 
-          This ensures that if the user clicks the Layers button, 
-          it will close the FacilityTypeControl automatically.
-        */}
         <div onClickCapture={() => setOpenOverlay(null)}>
           <BaseLayerSwitcher
             baseLayer={baseLayer}
