@@ -1662,7 +1662,10 @@ const TYPE_ICONS = {
   Hospital: "🏥",
   Clinic: "🏥",
   "Medical Office": "👨‍⚕️",
+  School: "🏫",       // Added
+  University: "🎓",   // Added
 };
+
 const DEFAULT_MARKER_EMOJI = "📍";
 
 function getDominantEmoji(markers) {
