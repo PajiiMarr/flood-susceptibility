@@ -13,7 +13,9 @@ import {
   ArrowRight,
   TrendingUp,
   MapPin,
+  CalendarDays,
 } from "lucide-react";
+import { supabase } from "@/lib/supabaseClient";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -47,25 +49,10 @@ export default function Dashboard() {
     return () => clearTimeout(timer);
   }, []);
 
-  const handleLogout = () => navigate("/login");
-
-  const navItems = [
-    {
-      id: "overview",
-      label: "Dashboard Overview",
-      icon: LayoutDashboard,
-      onClick: () => setActiveTab("overview"),
-    },
-    {
-      id: "map",
-      label: "Interactive Map",
-      icon: MapPin,
-      onClick: () => navigate("/map"),
-    },
-    { id: "datasets", label: "Datasets", icon: Database },
-    { id: "models", label: "Model Registry", icon: Layers },
-    { id: "settings", label: "Settings", icon: Settings },
-  ];
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    navigate("/login");
+  };
 
   const stats = [
     {
@@ -114,7 +101,6 @@ export default function Dashboard() {
       <div className="flex h-screen w-full bg-slate-50 font-sans overflow-hidden">
         {/* SIDEBAR */}
         <Sidebar className="bg-slate-900 border-r border-slate-800 [&_[data-sidebar=sidebar]]:bg-slate-900 [&_[data-sidebar=sidebar]]:text-slate-300">
-          {/* Fixed Header Alignment */}
           <SidebarHeader className="h-20 border-b border-slate-800 p-0">
             <div className="flex h-full w-full items-center px-4">
               <Map className="h-8 w-8 text-blue-500 mr-3 shrink-0" />
@@ -128,22 +114,61 @@ export default function Dashboard() {
             <SidebarGroup>
               <SidebarGroupContent>
                 <SidebarMenu className="gap-2 px-2">
-                  {navItems.map((item) => (
-                    <SidebarMenuItem key={item.id}>
-                      <SidebarMenuButton
-                        isActive={activeTab === item.id}
-                        onClick={item.onClick}
-                        className={`h-11 px-4 text-sm font-medium transition-all duration-200 ${
-                          activeTab === item.id
-                            ? "bg-blue-600 text-white hover:bg-blue-700 hover:text-white"
-                            : "hover:bg-slate-800 hover:text-white"
-                        }`}
-                      >
-                        <item.icon size={18} />
-                        <span>{item.label}</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  ))}
+                  {/* 1. Dashboard Overview */}
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      isActive={activeTab === "overview"}
+                      onClick={() => setActiveTab("overview")}
+                      className={`h-11 px-4 text-sm font-medium transition-all duration-200 ${
+                        activeTab === "overview"
+                          ? "bg-blue-600 text-white hover:bg-blue-700 hover:text-white"
+                          : "hover:bg-slate-800 hover:text-white"
+                      }`}
+                    >
+                      <LayoutDashboard size={18} />
+                      <span>Dashboard Overview</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+
+                  {/* 2. Flood Events (Single Link) */}
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => navigate("/events")}
+                      className="h-11 px-4 text-sm font-medium transition-all duration-200 hover:bg-slate-800 hover:text-white"
+                    >
+                      <CalendarDays size={18} />
+                      <span>Flood Events</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+
+                  {/* 3. Remaining Nav Items */}
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => navigate("/map")}
+                      className="h-11 px-4 text-sm font-medium hover:bg-slate-800 hover:text-white"
+                    >
+                      <MapPin size={18} />
+                      <span>Interactive Map</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton className="h-11 px-4 text-sm font-medium hover:bg-slate-800 hover:text-white">
+                      <Database size={18} />
+                      <span>Datasets</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton className="h-11 px-4 text-sm font-medium hover:bg-slate-800 hover:text-white">
+                      <Layers size={18} />
+                      <span>Model Registry</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton className="h-11 px-4 text-sm font-medium hover:bg-slate-800 hover:text-white">
+                      <Settings size={18} />
+                      <span>Settings</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
@@ -179,7 +204,6 @@ export default function Dashboard() {
 
         {/* MAIN CONTENT */}
         <main className="flex-1 overflow-y-auto relative">
-          {/* Reduced Header Text Size */}
           <header className="h-20 bg-white/80 backdrop-blur-md border-b border-slate-200 flex items-center justify-between px-6 sticky top-0 z-10">
             <div className="flex items-center gap-4">
               <SidebarTrigger className="text-slate-500 hover:text-slate-900" />
