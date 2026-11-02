@@ -68,6 +68,7 @@ import {
   SidebarMenuButton,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
+import { toast } from "sonner"; // <-- Import sonner toast
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
@@ -86,7 +87,6 @@ async function validateTiffMetadata(file) {
     const arrayBuffer = await file.arrayBuffer();
     const tiff = await geotiff.fromArrayBuffer(arrayBuffer);
     const image = await tiff.getImage();
-
     const width = image.getWidth();
     const height = image.getHeight();
     const origin = image.getOrigin();
@@ -120,10 +120,8 @@ export default function FloodEventsPage() {
   const [dbEvents, setDbEvents] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
-
   const [submitError, setSubmitError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
@@ -149,11 +147,10 @@ export default function FloodEventsPage() {
   });
 
   useEffect(() => {
-    const mq = window.matchMedia("(max-width: 767px)");
-    const update = () => setIsMobile(mq.matches);
-    update();
-    mq.addEventListener("change", update);
-    return () => mq.removeEventListener("change", update);
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
   }, []);
 
   const fetchEvents = async () => {
@@ -162,10 +159,7 @@ export default function FloodEventsPage() {
       .from("flood_events")
       .select("*")
       .order("created_at", { ascending: false });
-
-    if (!error && data) {
-      setDbEvents(data);
-    }
+    if (!error && data) setDbEvents(data);
     setIsLoading(false);
   };
 
@@ -187,14 +181,11 @@ export default function FloodEventsPage() {
   const handleFileChange = async (e, type) => {
     const file = e.target.files[0];
     if (!file) return;
-
     setFiles((prev) => ({
       ...prev,
       [type]: { file, status: "validating", message: "Checking metadata..." },
     }));
-
     const result = await validateTiffMetadata(file);
-
     setFiles((prev) => ({
       ...prev,
       [type]: {
@@ -233,7 +224,6 @@ export default function FloodEventsPage() {
     formData.append("livestockDamages", metadata.livestockDamages);
     formData.append("agriculturalDamages", metadata.agriculturalDamages);
     formData.append("powerSupplyDamages", metadata.powerSupplyDamages);
-
     formData.append("floodMap", files.floodMap.file);
     formData.append("diffDb", files.diffDb.file);
     formData.append("ndfi", files.ndfi.file);
@@ -243,12 +233,9 @@ export default function FloodEventsPage() {
         method: "POST",
         body: formData,
       });
-
       const data = await response.json();
-
-      if (!response.ok) {
+      if (!response.ok)
         throw new Error(data.detail || "Failed to upload event data.");
-      }
 
       setMetadata({
         eventName: "",
@@ -269,247 +256,287 @@ export default function FloodEventsPage() {
         diffDb: { file: null, status: "idle", message: "" },
         ndfi: { file: null, status: "idle", message: "" },
       });
-
       fetchEvents();
       setIsUploadOpen(false);
-      alert(data.message || "Event data uploaded successfully!");
+
+      // Sonner Toast
+      toast.success("Event data uploaded successfully!", {
+        description:
+          data.message || "Model retraining has started in the background.",
+      });
     } catch (error) {
       console.error(error);
       setSubmitError(error.message);
+
+      // Sonner Toast for errors
+      toast.error("Upload Failed", {
+        description: error.message,
+      });
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const fileStatusClass = (status) =>
-    status === "error"
-      ? "text-red-500"
-      : status === "success"
-        ? "text-green-600"
-        : "text-slate-500";
-
-  /* Form = scrollable body + pinned footer, so the submit button is always reachable */
   const formContent = (
-    <form
-      onSubmit={handleSubmit}
-      className="flex flex-col flex-1 min-h-0 w-full"
-    >
-      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 sm:px-6 py-4 space-y-6">
-        <div className="space-y-4">
-          <h4 className="text-sm font-semibold text-slate-900 border-b pb-2">
-            General Information
-          </h4>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="eventName">Flood Event Name</Label>
-              <Input
-                id="eventName"
-                name="eventName"
-                placeholder="e.g., Severe Tropical Storm Paeng"
-                value={metadata.eventName}
-                onChange={handleInputChange}
-                required
-              />
-            </div>
-            <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="rainfallDetails">
-                Amount of Rainfall / Details
-              </Label>
-              <Textarea
-                id="rainfallDetails"
-                name="rainfallDetails"
-                placeholder="e.g., Actual amount of rainfall Accumulated volume of rainfall was 158.3mm as of 9 pm, October 27, 2022"
-                value={metadata.rainfallDetails}
-                onChange={handleInputChange}
-                rows={2}
-              />
-            </div>
+    <form onSubmit={handleSubmit} className="space-y-6 pb-8">
+      <div className="space-y-4">
+        <h4 className="text-sm font-semibold text-slate-900 border-b pb-2">
+          General Information
+        </h4>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="eventName">Flood Event Name</Label>
+            <Input
+              id="eventName"
+              name="eventName"
+              placeholder="e.g., Severe Tropical Storm Paeng"
+              value={metadata.eventName}
+              onChange={handleInputChange}
+              required
+            />
+          </div>
+          <div className="space-y-2 md:col-span-2">
+            <Label htmlFor="rainfallDetails">
+              Amount of Rainfall / Details
+            </Label>
+            <Textarea
+              id="rainfallDetails"
+              name="rainfallDetails"
+              placeholder="e.g., Actual amount of rainfall Accumulated volume of rainfall was 158.3mm as of 9 pm, October 27, 2022"
+              value={metadata.rainfallDetails}
+              onChange={handleInputChange}
+              rows={2}
+            />
           </div>
         </div>
-
-        <div className="space-y-4">
-          <h4 className="text-sm font-semibold text-slate-900 border-b pb-2">
-            Impact Data
-          </h4>
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="affectedBarangays">Affected Barangays</Label>
-              <Input
-                id="affectedBarangays"
-                name="affectedBarangays"
-                type="number"
-                placeholder="e.g., 43"
-                value={metadata.affectedBarangays}
-                onChange={handleInputChange}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="affectedFamilies">Affected Families</Label>
-              <Input
-                id="affectedFamilies"
-                name="affectedFamilies"
-                type="number"
-                placeholder="e.g., 21445"
-                value={metadata.affectedFamilies}
-                onChange={handleInputChange}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="affectedIndividuals">Affected Individuals</Label>
-              <Input
-                id="affectedIndividuals"
-                name="affectedIndividuals"
-                type="number"
-                placeholder="e.g., 94279"
-                value={metadata.affectedIndividuals}
-                onChange={handleInputChange}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="casualties">Casualties</Label>
-              <Input
-                id="casualties"
-                name="casualties"
-                type="number"
-                placeholder="e.g., 0"
-                value={metadata.casualties}
-                onChange={handleInputChange}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="infrastructureDamages">
-                Infrastructure Damages
-              </Label>
-              <Input
-                id="infrastructureDamages"
-                name="infrastructureDamages"
-                type="number"
-                placeholder="e.g., 82"
-                value={metadata.infrastructureDamages}
-                onChange={handleInputChange}
-              />
-            </div>
-          </div>
-        </div>
-
-        <div className="space-y-4">
-          <h4 className="text-sm font-semibold text-slate-900 border-b pb-2">
-            Financial Damages (PHP)
-          </h4>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="totalCostDamaged">Total Cost of Damaged</Label>
-              <Input
-                id="totalCostDamaged"
-                name="totalCostDamaged"
-                type="number"
-                step="0.01"
-                placeholder="e.g., 1159856000.00"
-                value={metadata.totalCostDamaged}
-                onChange={handleInputChange}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="livestockDamages">Livestock and Poultry</Label>
-              <Input
-                id="livestockDamages"
-                name="livestockDamages"
-                type="number"
-                step="0.01"
-                placeholder="e.g., 582300.00"
-                value={metadata.livestockDamages}
-                onChange={handleInputChange}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="agriculturalDamages">Agricultural Damages</Label>
-              <Input
-                id="agriculturalDamages"
-                name="agriculturalDamages"
-                type="number"
-                step="0.01"
-                placeholder="e.g., 70470648.25"
-                value={metadata.agriculturalDamages}
-                onChange={handleInputChange}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="powerSupplyDamages">
-                Power Supply Cost Damages
-              </Label>
-              <Input
-                id="powerSupplyDamages"
-                name="powerSupplyDamages"
-                type="number"
-                step="0.01"
-                placeholder="e.g., 2082414.00"
-                value={metadata.powerSupplyDamages}
-                onChange={handleInputChange}
-              />
-            </div>
-            <div className="space-y-2 sm:col-span-2">
-              <Label htmlFor="houseDamagesDetails">House Damages Details</Label>
-              <Input
-                id="houseDamagesDetails"
-                name="houseDamagesDetails"
-                placeholder="e.g., Partially Damage: 2,462, Totally Damage: 943"
-                value={metadata.houseDamagesDetails}
-                onChange={handleInputChange}
-              />
-            </div>
-          </div>
-        </div>
-
-        <div className="space-y-4">
-          <h4 className="text-sm font-semibold text-slate-900 border-b pb-2">
-            Spatial Data (GeoTIFF)
-          </h4>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
-            {[
-              { key: "floodMap", label: "1. Flood Map (.tif)" },
-              { key: "diffDb", label: "2. Difference DB (.tif)" },
-              { key: "ndfi", label: "3. NDFI (.tif)" },
-            ].map(({ key, label }) => (
-              <div key={key} className="space-y-2 min-w-0">
-                <Label className="text-sm font-medium">{label}</Label>
-                <Input
-                  type="file"
-                  accept=".tif,.tiff"
-                  onChange={(e) => handleFileChange(e, key)}
-                  className="cursor-pointer file:text-blue-600 file:bg-blue-50 hover:file:bg-blue-100 transition-colors"
-                />
-                {files[key].status !== "idle" && (
-                  <p
-                    className={`text-xs flex items-start gap-1 mt-1 break-words ${fileStatusClass(files[key].status)}`}
-                  >
-                    {files[key].status === "validating" && (
-                      <Loader2 className="h-3 w-3 mt-0.5 shrink-0 animate-spin" />
-                    )}
-                    {files[key].status === "success" && (
-                      <CheckCircle2 className="h-3 w-3 mt-0.5 shrink-0" />
-                    )}
-                    {files[key].status === "error" && (
-                      <FileWarning className="h-3 w-3 mt-0.5 shrink-0" />
-                    )}
-                    <span className="min-w-0">{files[key].message}</span>
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {submitError && (
-          <div className="p-4 text-sm text-red-500 bg-red-50 border border-red-200 rounded-md flex items-start gap-2">
-            <FileWarning className="h-5 w-5 shrink-0 text-red-500" />
-            <span className="min-w-0 break-words">
-              <strong>Upload Failed:</strong> {submitError}
-            </span>
-          </div>
-        )}
       </div>
 
-      <div className="shrink-0 flex justify-end border-t border-slate-100 bg-white px-4 sm:px-6 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+      <div className="space-y-4">
+        <h4 className="text-sm font-semibold text-slate-900 border-b pb-2">
+          Impact Data
+        </h4>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="affectedBarangays">Affected Barangays</Label>
+            <Input
+              id="affectedBarangays"
+              name="affectedBarangays"
+              type="number"
+              placeholder="e.g., 43"
+              value={metadata.affectedBarangays}
+              onChange={handleInputChange}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="affectedFamilies">Affected Families</Label>
+            <Input
+              id="affectedFamilies"
+              name="affectedFamilies"
+              type="number"
+              placeholder="e.g., 21445"
+              value={metadata.affectedFamilies}
+              onChange={handleInputChange}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="affectedIndividuals">Affected Individuals</Label>
+            <Input
+              id="affectedIndividuals"
+              name="affectedIndividuals"
+              type="number"
+              placeholder="e.g., 94279"
+              value={metadata.affectedIndividuals}
+              onChange={handleInputChange}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="casualties">Casualties</Label>
+            <Input
+              id="casualties"
+              name="casualties"
+              type="number"
+              placeholder="e.g., 0"
+              value={metadata.casualties}
+              onChange={handleInputChange}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="infrastructureDamages">
+              Infrastructure Damages
+            </Label>
+            <Input
+              id="infrastructureDamages"
+              name="infrastructureDamages"
+              type="number"
+              placeholder="e.g., 82"
+              value={metadata.infrastructureDamages}
+              onChange={handleInputChange}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <h4 className="text-sm font-semibold text-slate-900 border-b pb-2">
+          Financial Damages (PHP)
+        </h4>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="totalCostDamaged">Total Cost of Damaged</Label>
+            <Input
+              id="totalCostDamaged"
+              name="totalCostDamaged"
+              type="number"
+              step="0.01"
+              placeholder="e.g., 1159856000.00"
+              value={metadata.totalCostDamaged}
+              onChange={handleInputChange}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="livestockDamages">Livestock and Poultry</Label>
+            <Input
+              id="livestockDamages"
+              name="livestockDamages"
+              type="number"
+              step="0.01"
+              placeholder="e.g., 582300.00"
+              value={metadata.livestockDamages}
+              onChange={handleInputChange}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="agriculturalDamages">Agricultural Damages</Label>
+            <Input
+              id="agriculturalDamages"
+              name="agriculturalDamages"
+              type="number"
+              step="0.01"
+              placeholder="e.g., 70470648.25"
+              value={metadata.agriculturalDamages}
+              onChange={handleInputChange}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="powerSupplyDamages">
+              Power Supply Cost Damages
+            </Label>
+            <Input
+              id="powerSupplyDamages"
+              name="powerSupplyDamages"
+              type="number"
+              step="0.01"
+              placeholder="e.g., 2082414.00"
+              value={metadata.powerSupplyDamages}
+              onChange={handleInputChange}
+            />
+          </div>
+          <div className="space-y-2 sm:col-span-2">
+            <Label htmlFor="houseDamagesDetails">House Damages Details</Label>
+            <Input
+              id="houseDamagesDetails"
+              name="houseDamagesDetails"
+              placeholder="e.g., Partially Damage: 2,462, Totally Damage: 943"
+              value={metadata.houseDamagesDetails}
+              onChange={handleInputChange}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <h4 className="text-sm font-semibold text-slate-900 border-b pb-2">
+          Spatial Data (GeoTIFF)
+        </h4>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">1. Flood Map (.tif)</Label>
+            <Input
+              type="file"
+              accept=".tif,.tiff"
+              onChange={(e) => handleFileChange(e, "floodMap")}
+              className="cursor-pointer file:text-blue-600 file:bg-blue-50 hover:file:bg-blue-100 transition-colors"
+            />
+            {files.floodMap.status !== "idle" && (
+              <p
+                className={`text-xs flex items-center gap-1 mt-1 ${files.floodMap.status === "error" ? "text-red-500" : files.floodMap.status === "success" ? "text-green-600" : "text-slate-500"}`}
+              >
+                {files.floodMap.status === "validating" && (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                )}
+                {files.floodMap.status === "success" && (
+                  <CheckCircle2 className="h-3 w-3" />
+                )}
+                {files.floodMap.status === "error" && (
+                  <FileWarning className="h-3 w-3" />
+                )}
+                {files.floodMap.message}
+              </p>
+            )}
+          </div>
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">
+              2. Difference DB (.tif)
+            </Label>
+            <Input
+              type="file"
+              accept=".tif,.tiff"
+              onChange={(e) => handleFileChange(e, "diffDb")}
+              className="cursor-pointer file:text-blue-600 file:bg-blue-50 hover:file:bg-blue-100 transition-colors"
+            />
+            {files.diffDb.status !== "idle" && (
+              <p
+                className={`text-xs flex items-center gap-1 mt-1 ${files.diffDb.status === "error" ? "text-red-500" : files.diffDb.status === "success" ? "text-green-600" : "text-slate-500"}`}
+              >
+                {files.diffDb.status === "validating" && (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                )}
+                {files.diffDb.status === "success" && (
+                  <CheckCircle2 className="h-3 w-3" />
+                )}
+                {files.diffDb.status === "error" && (
+                  <FileWarning className="h-3 w-3" />
+                )}
+                {files.diffDb.message}
+              </p>
+            )}
+          </div>
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">3. NDFI (.tif)</Label>
+            <Input
+              type="file"
+              accept=".tif,.tiff"
+              onChange={(e) => handleFileChange(e, "ndfi")}
+              className="cursor-pointer file:text-blue-600 file:bg-blue-50 hover:file:bg-blue-100 transition-colors"
+            />
+            {files.ndfi.status !== "idle" && (
+              <p
+                className={`text-xs flex items-center gap-1 mt-1 ${files.ndfi.status === "error" ? "text-red-500" : files.ndfi.status === "success" ? "text-green-600" : "text-slate-500"}`}
+              >
+                {files.ndfi.status === "validating" && (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                )}
+                {files.ndfi.status === "success" && (
+                  <CheckCircle2 className="h-3 w-3" />
+                )}
+                {files.ndfi.status === "error" && (
+                  <FileWarning className="h-3 w-3" />
+                )}
+                {files.ndfi.message}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {submitError && (
+        <div className="p-4 text-sm text-red-500 bg-red-50 border border-red-200 rounded-md flex items-center gap-2">
+          <FileWarning className="h-5 w-5 text-red-500" />
+          <strong>Upload Failed:</strong> {submitError}
+        </div>
+      )}
+
+      <div className="flex justify-end pt-4 border-t border-slate-100">
         <Button
           type="submit"
           disabled={!isFormValid || isSubmitting}
@@ -540,7 +567,6 @@ export default function FloodEventsPage() {
               </span>
             </div>
           </SidebarHeader>
-
           <SidebarContent className="mt-4">
             <SidebarGroup>
               <SidebarGroupContent>
@@ -554,7 +580,6 @@ export default function FloodEventsPage() {
                       <span>Dashboard Overview</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
-
                   <SidebarMenuItem>
                     <SidebarMenuButton
                       isActive={true}
@@ -565,7 +590,6 @@ export default function FloodEventsPage() {
                       <span>Flood Events</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
-
                   <SidebarMenuItem>
                     <SidebarMenuButton
                       onClick={() => navigate("/map")}
@@ -597,7 +621,6 @@ export default function FloodEventsPage() {
               </SidebarGroupContent>
             </SidebarGroup>
           </SidebarContent>
-
           <SidebarFooter className="p-4 border-t border-slate-800">
             <div className="flex items-center gap-3 px-2 py-3 mb-2 rounded-lg bg-slate-800/50">
               <div className="h-8 w-8 rounded-full bg-blue-500 flex items-center justify-center text-white font-bold">
@@ -714,20 +737,15 @@ export default function FloodEventsPage() {
                           <CalendarDays className="h-4 w-4" />
                           {new Date(event.created_at).toLocaleDateString(
                             "en-US",
-                            {
-                              month: "long",
-                              year: "numeric",
-                            },
+                            { month: "long", year: "numeric" },
                           )}
                         </CardDescription>
                       </CardHeader>
-
                       <CardContent className="flex-1">
                         <p className="text-sm text-slate-600 mb-6 line-clamp-3">
                           {event.rainfall_details ||
                             "No rainfall details provided."}
                         </p>
-
                         <div className="grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded-lg border border-slate-100">
                           <div className="flex flex-col items-center text-center">
                             <CloudRain className="h-5 w-5 text-blue-500 mb-1" />
@@ -762,7 +780,6 @@ export default function FloodEventsPage() {
                           </div>
                         </div>
                       </CardContent>
-
                       <CardFooter className="pt-4 pb-4 border-t border-slate-100 mt-auto">
                         <Button
                           variant="outline"
@@ -783,18 +800,17 @@ export default function FloodEventsPage() {
         </main>
       </div>
 
-      {/* MOBILE DRAWER: full-width bottom sheet, pinned header + scrolling body + pinned submit */}
       {isMobile ? (
         <Sheet open={isUploadOpen} onOpenChange={setIsUploadOpen}>
           <SheetContent
             side="bottom"
-            className="flex flex-col gap-0 p-0 max-h-[85dvh] sm:max-h-[80dvh] rounded-t-2xl"
+            className="h-[90vh] w-full px-4 py-6 sm:px-6 overflow-y-auto rounded-t-2xl flex flex-col"
           >
-            <div className="pt-2 pb-1 flex justify-center">
-              <div className="h-1.5 w-12 rounded-full bg-muted-foreground/30" />
-            </div>
-            <SheetHeader className="border-b px-4 pb-3 pt-1 text-left">
-              <SheetTitle>Upload New Event Data</SheetTitle>
+            <SheetHeader className="mb-6 text-left">
+              <SheetTitle className="flex items-center gap-2">
+                <UploadCloud className="h-5 w-5 text-blue-600" />
+                Upload New Event Data
+              </SheetTitle>
               <SheetDescription>
                 Add a new historical flood event by providing the impact data
                 and uploading the validated GeoTIFF outputs.
@@ -804,10 +820,9 @@ export default function FloodEventsPage() {
           </SheetContent>
         </Sheet>
       ) : (
-        /* DESKTOP DIALOG: sm:max-w-* is required to override shadcn's default sm:max-w-lg */
         <Dialog open={isUploadOpen} onOpenChange={setIsUploadOpen}>
-          <DialogContent className="w-[95vw] sm:max-w-2xl max-h-[90vh] gap-0 p-0 flex flex-col overflow-hidden">
-            <DialogHeader className="shrink-0 px-6 pt-6 pb-4 border-b border-slate-100 text-left">
+          <DialogContent className="max-w-5xl w-[95vw] max-h-[90vh] p-6 overflow-y-auto">
+            <DialogHeader className="mb-6">
               <DialogTitle className="flex items-center gap-2">
                 <UploadCloud className="h-5 w-5 text-blue-600" />
                 Upload New Event Data
@@ -822,10 +837,7 @@ export default function FloodEventsPage() {
         </Dialog>
       )}
 
-      <style>{`
-        @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .animate-fade-in-up { animation: fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      `}</style>
+      <style>{`@keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } } .animate-fade-in-up { animation: fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }`}</style>
     </SidebarProvider>
   );
 }

@@ -54,6 +54,7 @@ function App() {
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </BrowserRouter>
+      <Toaster position="top-right" richColors /> 
     </AuthProvider>
   );
 }
