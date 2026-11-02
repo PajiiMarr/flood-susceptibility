@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, useNavigate } from "react-router-dom";
+import { Toaster } from "@/components/ui/sonner";
 import Dashboard from "./components/admin/Dashboard";
 import FloodMap from "./components/Map";
 import LandingPage from "./components/LandingPage";
@@ -54,7 +55,7 @@ function App() {
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </BrowserRouter>
-      <Toaster position="top-right" richColors /> 
+      <Toaster position="top-right" richColors />
     </AuthProvider>
   );
 }

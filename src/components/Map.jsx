@@ -61,6 +61,14 @@ import {
   LogIn,
 } from "lucide-react";
 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
 export const EVACUATION_CENTER_TYPE = "Evacuation Center";
 
 // ==========================================
@@ -810,12 +818,13 @@ async function fetchServerFsiPoint(
   lat,
   lng,
   model = DEFAULT_FSI_MODEL,
+  event = "overall",
   { explain = false } = {},
 ) {
   const res = await fetch(`${API_BASE_URL}/api/predict/point`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ lat, lng, model, explain }),
+    body: JSON.stringify({ lat, lng, model, event, explain }),
   });
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
@@ -828,20 +837,28 @@ async function fetchServerFsiPoint(
   return res.json();
 }
 
-async function fetchServerFsiBatch(points, model = DEFAULT_FSI_MODEL) {
+async function fetchServerFsiBatch(
+  points,
+  model = DEFAULT_FSI_MODEL,
+  event = "overall",
+) {
   const res = await fetch(`${API_BASE_URL}/api/predict/batch`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, explain: false, points }),
+    body: JSON.stringify({ model, event, explain: false, points }),
   });
   if (!res.ok) throw new Error(`Batch failed: HTTP ${res.status}`);
   return res.json();
 }
 
-async function resolveBarangayFsi(features, model = DEFAULT_FSI_MODEL) {
-  if (APP_CACHE.fsi[model]) {
-    return APP_CACHE.fsi[model];
-  }
+async function resolveBarangayFsi(
+  features,
+  model = DEFAULT_FSI_MODEL,
+  event = "overall",
+) {
+  const cacheKey = `${event}_${model}`;
+  if (APP_CACHE.fsi[cacheKey]) return APP_CACHE.fsi[cacheKey];
+
   const result = new Map();
   if (!USE_SERVER) {
     for (const f of features) {
@@ -853,7 +870,7 @@ async function resolveBarangayFsi(features, model = DEFAULT_FSI_MODEL) {
         top_factors: [],
       });
     }
-    APP_CACHE.fsi[model] = result;
+    APP_CACHE.fsi[cacheKey] = result;
     return result;
   }
   const order = [],
@@ -874,25 +891,21 @@ async function resolveBarangayFsi(features, model = DEFAULT_FSI_MODEL) {
     points.push({ lat: centroid.lat, lng: centroid.lng });
   }
   if (points.length === 0) return result;
-  const t0 = performance.now();
+
   try {
-    const data = await fetchServerFsiBatch(points, model);
+    const data = await fetchServerFsiBatch(points, model, event);
     const results = data.results || [];
-    const dt = Math.round(performance.now() - t0);
-    console.log(
-      `[FSI][${model}] Batch: ${results.length}/${points.length} in ${dt}ms`,
-    );
     for (let i = 0; i < order.length; i++) {
       const r = results[i],
         o = order[i];
-      if (r && !r.error && typeof r.probability === "number")
+      if (r && !r.error && typeof r.probability === "number") {
         result.set(o.name, {
           risk: r.risk_class || "Low Risk",
           probability: r.probability,
           centroid: o.centroid,
           top_factors: [],
         });
-      else
+      } else {
         result.set(o.name, {
           risk: "Low Risk",
           probability: null,
@@ -900,11 +913,9 @@ async function resolveBarangayFsi(features, model = DEFAULT_FSI_MODEL) {
           top_factors: [],
           error: r?.error || "no result",
         });
+      }
     }
   } catch (err) {
-    console.warn(
-      `[FSI][${model}] Batch failed (${err.message}); falling back to random`,
-    );
     for (const o of order)
       result.set(o.name, {
         risk: getRandomRiskLevel(),
@@ -913,11 +924,11 @@ async function resolveBarangayFsi(features, model = DEFAULT_FSI_MODEL) {
         top_factors: [],
       });
   }
-  APP_CACHE.fsi[model] = result;
+  APP_CACHE.fsi[cacheKey] = result;
   return result;
 }
 
-function useBarangayExplanation(barangay, model) {
+function useBarangayExplanation(barangay, model, event) {
   const [factors, setFactors] = useState(barangay?.top_factors || []);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -931,9 +942,12 @@ function useBarangayExplanation(barangay, model) {
       typeof barangay?.lng !== "number"
     )
       return;
+
     let cancelled = false;
     setLoading(true);
-    fetchServerFsiPoint(barangay.lat, barangay.lng, model, { explain: true })
+    fetchServerFsiPoint(barangay.lat, barangay.lng, model, event, {
+      explain: true,
+    })
       .then((data) => {
         if (!cancelled) setFactors(data.top_factors || []);
       })
@@ -943,10 +957,11 @@ function useBarangayExplanation(barangay, model) {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+
     return () => {
       cancelled = true;
     };
-  }, [barangay, model]);
+  }, [barangay, model, event]);
   return { factors, loading, error };
 }
 
@@ -2432,6 +2447,7 @@ function ZamboangaMask({
   mapMode,
   selectedBarangayName,
   fsiModel,
+  selectedEvent, // <-- Added
   onFsiStatusChange,
 }) {
   const map = useMap();
@@ -2449,10 +2465,12 @@ function ZamboangaMask({
   useEffect(() => {
     rasterActiveRef.current = rasterActive;
   }, [rasterActive]);
+
   const fsiVisibleRef = useRef(fsiVisible);
   useEffect(() => {
     fsiVisibleRef.current = fsiVisible;
   }, [fsiVisible]);
+
   const mapModeRef = useRef(mapMode);
   useEffect(() => {
     mapModeRef.current = mapMode;
@@ -2505,7 +2523,6 @@ function ZamboangaMask({
 
       const popMap = await fetchBarangayPopulations();
       const maritime = await fetchZamboangaMaritimeBoundary();
-
       return [cityData, barangayData, popMap, maritime];
     };
 
@@ -2535,10 +2552,12 @@ function ZamboangaMask({
         },
         interactive: false,
       }).addTo(map);
+
       borderLayerRef.current = L.geoJSON(cityData, {
         style: { color: "#e8401c", weight: 2.5, opacity: 1, fill: false },
         interactive: false,
       }).addTo(map);
+
       if (maritime?.features?.length)
         maritimeLayerRef.current = L.geoJSON(maritime, {
           style: {
@@ -2561,7 +2580,6 @@ function ZamboangaMask({
       if (barangayLayerRef.current) map.removeLayer(barangayLayerRef.current);
       if (maritimeLayerRef.current) map.removeLayer(maritimeLayerRef.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map]);
 
   useEffect(() => {
@@ -2583,6 +2601,7 @@ function ZamboangaMask({
         const fsiMap = await resolveBarangayFsi(
           barangayData.features,
           fsiModel,
+          selectedEvent,
         );
         if (cancelled) return;
 
@@ -2596,10 +2615,7 @@ function ZamboangaMask({
               break;
             }
           }
-          if (population == null) {
-            unmatched += 1;
-            console.warn("Unmatched:", name);
-          }
+          if (population == null) unmatched += 1;
           const fsi = fsiMap.get(name) || {};
           return {
             ...f,
@@ -2613,11 +2629,6 @@ function ZamboangaMask({
             },
           };
         });
-
-        if (unmatched > 0)
-          console.warn(
-            `Population data: ${unmatched} barangay(s) unmatched in PSA spreadsheet.`,
-          );
 
         const updated = { ...barangayData, features: featuresWithRisk };
         onBarangaysLoaded?.(updated);
@@ -2721,8 +2732,7 @@ function ZamboangaMask({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [map, fsiModel]);
+  }, [map, fsiModel, selectedEvent]); // <-- Added selectedEvent
 
   useEffect(() => {
     const layer = barangayLayerRef.current;
@@ -3751,10 +3761,12 @@ function SidebarSkeleton() {
   );
 }
 
-function BarangayCard({ barangay, onClear }) {
+function BarangayCard({ barangay, onClear, event }) {
+  // <-- Added event
   const { factors, loading, error } = useBarangayExplanation(
     barangay,
     DEFAULT_FSI_MODEL,
+    event, // <-- Added event
   );
   if (!barangay) return null;
   const { name, risk, population, probability } = barangay;
@@ -3936,8 +3948,9 @@ function FacilityDetailsPanel({
   onClearBarangay,
   facilitiesInBarangay = [],
   isLoadingBarangays = false,
-  selectedFacility, // NEW
-  onClearFacility, // NEW
+  selectedFacility,
+  onClearFacility,
+  selectedEvent, // <-- Added
 }) {
   const {
     mode = "idle",
@@ -3947,7 +3960,6 @@ function FacilityDetailsPanel({
     originBarangay = null,
   } = selection || {};
 
-  // If a facility is selected via map click, override the current panel content
   if (selectedFacility) {
     return (
       <div className="space-y-4">
@@ -3959,7 +3971,6 @@ function FacilityDetailsPanel({
     );
   }
 
-  // ---------- No mode selected ----------
   if (mapMode === "none") {
     return (
       <div className="space-y-4">
@@ -3984,9 +3995,9 @@ function FacilityDetailsPanel({
               <BarangayCard
                 barangay={selectedBarangay}
                 onClear={onClearBarangay}
+                event={selectedEvent} // <-- Added
               />
 
-              {/* List of facilities inside the barangay */}
               <div className="space-y-3">
                 <h4 className="text-xs uppercase tracking-wide text-muted-foreground font-semibold">
                   Facilities in {selectedBarangay.name}
@@ -4232,18 +4243,16 @@ function OriginCard({ origin }) {
   );
 }
 
-function FSIRasterLayer({ model, visible, cityBoundary }) {
+function FSIRasterLayer({ model, event, visible, cityBoundary }) {
   const map = useMap();
   const layerRef = useRef(null);
-  const breaksRef = useRef([0.654, 0.746, 0.782]); // Fallback
+  const breaksRef = useRef([0.654, 0.746, 0.782]);
 
-  // Fetch the actual risk breaks from the backend on mount
   useEffect(() => {
     fetch(`${API_BASE_URL}/api/models`)
       .then((res) => res.json())
       .then((data) => {
         if (data.risk_mapping) {
-          // Extract the upper bounds (excluding the final 1.0)
           const b = data.risk_mapping.map((r) => r.upper).slice(0, 3);
           if (b.length === 3) breaksRef.current = b;
         }
@@ -4259,7 +4268,7 @@ function FSIRasterLayer({ model, visible, cityBoundary }) {
 
     const fetchRaster = async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/raster/${model}`);
+        const res = await fetch(`${API_BASE_URL}/api/raster/${event}/${model}`);
         if (!res.ok) throw new Error("Failed to fetch TIFF");
         const arrayBuffer = await res.arrayBuffer();
 
@@ -4290,7 +4299,6 @@ function FSIRasterLayer({ model, visible, cityBoundary }) {
           const idx = i * 4;
           const val = values[i];
 
-          // Skip NoData, negative values (ocean), and undefined
           if (
             val === null ||
             val === undefined ||
@@ -4302,23 +4310,18 @@ function FSIRasterLayer({ model, visible, cityBoundary }) {
           }
 
           let color;
-          // Use backend thresholds
-          if (val < t1)
-            color = [145, 191, 219]; // Low
-          else if (val < t2)
-            color = [254, 224, 144]; // Medium
-          else if (val < t3)
-            color = [252, 141, 89]; // High
-          else color = [215, 48, 39]; // Very High
+          if (val < t1) color = [145, 191, 219];
+          else if (val < t2) color = [254, 224, 144];
+          else if (val < t3) color = [252, 141, 89];
+          else color = [215, 48, 39];
 
           imgData.data[idx] = color[0];
           imgData.data[idx + 1] = color[1];
           imgData.data[idx + 2] = color[2];
-          imgData.data[idx + 3] = 180; // Opacity
+          imgData.data[idx + 3] = 180;
         }
         ctx.putImageData(imgData, 0, 0);
 
-        // --- CLIP TO BOUNDARY ---
         let outCanvas = canvas;
         const rings = getClipRingsFromBoundary(
           cityBoundary,
@@ -4371,7 +4374,7 @@ function FSIRasterLayer({ model, visible, cityBoundary }) {
     return () => {
       if (layerRef.current) map.removeLayer(layerRef.current);
     };
-  }, [map, model, visible, cityBoundary]);
+  }, [map, model, event, visible, cityBoundary]);
 
   return null;
 }
@@ -4623,6 +4626,48 @@ function FsiLoadingIndicator({ status, visible = true, compact = false }) {
   );
 }
 
+function EventSelector({
+  selectedEvent,
+  onEventChange,
+  availableEvents,
+  compact,
+}) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: compact ? "124px" : "136px", // Below search/facility filters
+        left: compact ? "12px" : "16px",
+        zIndex: 2000,
+        backgroundColor: "rgba(255,255,255,0.85)",
+        backdropFilter: "blur(10px)",
+        WebkitBackdropFilter: "blur(10px)",
+        borderRadius: "8px",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+        padding: "4px",
+        border: "1px solid rgba(255,255,255,0.4)",
+        pointerEvents: "auto",
+        minWidth: "160px",
+      }}
+    >
+      <Select value={selectedEvent} onValueChange={onEventChange}>
+        <SelectTrigger className="w-full h-8 text-xs font-semibold bg-transparent border-none focus:ring-0">
+          <SelectValue placeholder="Select event" />
+        </SelectTrigger>
+        <SelectContent>
+          {availableEvents.map((ev) => (
+            <SelectItem key={ev} value={ev} className="text-xs">
+              {ev === "overall"
+                ? "Overall Event"
+                : ev.replace(/_/g, " ").toUpperCase()}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
 function FloodMap() {
   const position = [7.0736, 122.01];
   const [facilities, setFacilities] = useState([]);
@@ -4640,6 +4685,8 @@ function FloodMap() {
   const [baseLayer, setBaseLayer] = useState("satellite");
   const [fsiStatus, setFsiStatus] = useState("boundaries");
   const navigate = useNavigate();
+  const [selectedEvent, setSelectedEvent] = useState("overall");
+  const [availableEvents, setAvailableEvents] = useState(["overall"]);
 
   const [selection, setSelection] = useState({
     mode: "idle",
@@ -4686,6 +4733,19 @@ function FloodMap() {
         return n;
       });
     }
+  }, []);
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/events/models`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.events && Array.isArray(data.events)) {
+          const evs = data.events.map((e) => e.event);
+          if (!evs.includes("overall")) evs.unshift("overall");
+          setAvailableEvents(evs);
+        }
+      })
+      .catch((err) => console.error("Failed to load events:", err));
   }, []);
 
   useEffect(() => {
@@ -4971,6 +5031,7 @@ function FloodMap() {
         isLoadingBarangays={isLoadingBarangays}
         selectedFacility={selectedFacility}
         onClearFacility={() => setSelectedFacility(null)}
+        selectedEvent={selectedEvent}
       />
     </div>
   );
@@ -5052,6 +5113,7 @@ function FloodMap() {
           {/* Render the continuous raster here */}
           <FSIRasterLayer
             model={DEFAULT_FSI_MODEL}
+            event={selectedEvent} // <-- Add
             visible={rasterVisible}
             cityBoundary={cityBoundary}
           />
@@ -5063,8 +5125,10 @@ function FloodMap() {
             mapMode={mapMode}
             selectedBarangayName={selectedBarangay?.name || null}
             fsiModel={DEFAULT_FSI_MODEL}
+            selectedEvent={selectedEvent} // <-- Add
             onFsiStatusChange={setFsiStatus}
           />
+
           <POILayer
             onFacilities={setFacilities}
             hiddenFacilities={effectiveHiddenFacilities}
@@ -5175,6 +5239,12 @@ function FloodMap() {
         <MapModeControl
           mode={mapMode}
           onModeChange={handleModeChange}
+          compact={compact}
+        />
+        <EventSelector
+          selectedEvent={selectedEvent}
+          onEventChange={setSelectedEvent}
+          availableEvents={availableEvents}
           compact={compact}
         />
         <FacilityTypeControl
