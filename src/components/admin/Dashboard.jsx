@@ -127,7 +127,7 @@ export default function Dashboard() {
                     </SidebarMenuButton>
                   </SidebarMenuItem>
 
-                  {/* 2. Flood Events (Single Link) */}
+                  {/* 2. Flood Events */}
                   <SidebarMenuItem>
                     <SidebarMenuButton
                       onClick={() => navigate("/events")}
@@ -135,6 +135,17 @@ export default function Dashboard() {
                     >
                       <CalendarDays size={18} />
                       <span>Flood Events</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+
+                  {/* 3. Users */}
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => navigate("/users")}
+                      className="h-11 px-4 text-sm font-medium text-slate-300 transition-all duration-200 hover:bg-slate-800 hover:text-white"
+                    >
+                      <Users size={18} />
+                      <span>Users</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 </SidebarMenu>

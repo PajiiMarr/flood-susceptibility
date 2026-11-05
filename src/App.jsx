@@ -4,11 +4,12 @@ import Dashboard from "./components/admin/Dashboard";
 import FloodMap from "./components/Map";
 import LandingPage from "./components/LandingPage";
 import LoginPage from "./components/LoginPage";
-import NotFoundPage from "./components/NotFoundPage"; // <-- Add import
+import NotFoundPage from "./components/NotFoundPage";
 import "./App.css";
 import { AuthProvider } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import FloodEventsPage from "./components/admin/FloodEventsPage";
+import UsersPage from "./components/admin/Users"; // <-- Imported UsersPage
 
 function LandingPageWrapper() {
   const navigate = useNavigate();
@@ -49,6 +50,15 @@ function App() {
                 <div className="min-h-screen bg-slate-50">
                   <FloodEventsPage />
                 </div>
+              </ProtectedRoute>
+            }
+          />
+          {/* Added Users Route */}
+          <Route
+            path="/users"
+            element={
+              <ProtectedRoute>
+                <UsersPage />
               </ProtectedRoute>
             }
           />
