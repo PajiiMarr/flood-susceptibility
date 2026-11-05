@@ -4,13 +4,10 @@ import {
   Map,
   LayoutDashboard,
   Database,
-  Cpu,
   Settings,
   LogOut,
-  Activity,
   Layers,
   ArrowRight,
-  TrendingUp,
   MapPin,
   CalendarDays,
   CloudRain,
@@ -21,9 +18,6 @@ import {
   CheckCircle2,
   FileWarning,
   Loader2,
-  Users,
-  DollarSign,
-  Home,
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 import * as geotiff from "geotiff";
@@ -35,9 +29,9 @@ import {
   Card,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
+  CardFooter,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -68,7 +62,7 @@ import {
   SidebarMenuButton,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
-import { toast } from "sonner"; // <-- Import sonner toast
+import { toast } from "sonner";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
@@ -259,7 +253,6 @@ export default function FloodEventsPage() {
       fetchEvents();
       setIsUploadOpen(false);
 
-      // Sonner Toast
       toast.success("Event data uploaded successfully!", {
         description:
           data.message || "Model retraining has started in the background.",
@@ -268,7 +261,6 @@ export default function FloodEventsPage() {
       console.error(error);
       setSubmitError(error.message);
 
-      // Sonner Toast for errors
       toast.error("Upload Failed", {
         description: error.message,
       });
@@ -804,33 +796,29 @@ export default function FloodEventsPage() {
         <Sheet open={isUploadOpen} onOpenChange={setIsUploadOpen}>
           <SheetContent
             side="bottom"
-            className="h-[90vh] w-full px-4 py-6 sm:px-6 overflow-y-auto rounded-t-2xl flex flex-col"
+            className="flex flex-col gap-0 p-0 max-h-[85dvh] sm:max-h-[80dvh] rounded-t-2xl"
           >
-            <SheetHeader className="mb-6 text-left">
+            <div className="pt-2 pb-1 flex justify-center">
+              <div className="h-1.5 w-12 rounded-full bg-muted-foreground/30" />
+            </div>
+            <SheetHeader className="border-b px-4 pb-3 pt-1 text-left">
               <SheetTitle className="flex items-center gap-2">
                 <UploadCloud className="h-5 w-5 text-blue-600" />
                 Upload New Event Data
               </SheetTitle>
-              <SheetDescription>
-                Add a new historical flood event by providing the impact data
-                and uploading the validated GeoTIFF outputs.
-              </SheetDescription>
             </SheetHeader>
-            {formContent}
+            <div className="flex-1 overflow-y-auto p-4">{formContent}</div>
           </SheetContent>
         </Sheet>
       ) : (
         <Dialog open={isUploadOpen} onOpenChange={setIsUploadOpen}>
-          <DialogContent className="max-w-5xl w-[95vw] max-h-[90vh] p-6 overflow-y-auto">
+          {/* Added !max-w-6xl and sm:max-w-6xl to force the width override */}
+          <DialogContent className="w-[95vw] !max-w-6xl sm:!max-w-6xl max-h-[90vh] p-6 overflow-y-auto">
             <DialogHeader className="mb-6">
               <DialogTitle className="flex items-center gap-2">
                 <UploadCloud className="h-5 w-5 text-blue-600" />
                 Upload New Event Data
               </DialogTitle>
-              <DialogDescription>
-                Add a new historical flood event by providing the impact data
-                and uploading the validated GeoTIFF outputs.
-              </DialogDescription>
             </DialogHeader>
             {formContent}
           </DialogContent>
