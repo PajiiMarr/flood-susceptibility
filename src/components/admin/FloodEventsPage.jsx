@@ -115,6 +115,8 @@ export default function FloodEventsPage() {
   const [isMobile, setIsMobile] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+  const [currentUser, setCurrentUser] = useState(null);
+  const [isUserLoading, setIsUserLoading] = useState(true);
 
   const [files, setFiles] = useState({
     floodMap: { file: null, status: "idle", message: "" },
@@ -142,6 +144,22 @@ export default function FloodEventsPage() {
     handleResize();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
+    const fetchUser = async () => {
+      try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        setCurrentUser(user);
+      } catch (error) {
+        console.error("Error fetching user:", error);
+      } finally {
+        setIsUserLoading(false);
+      }
+    };
+    fetchUser();
   }, []);
 
   const fetchEvents = async () => {
@@ -594,17 +612,29 @@ export default function FloodEventsPage() {
           </SidebarContent>
           <SidebarFooter className="p-4 border-t border-slate-800 bg-slate-900">
             <div className="flex items-center gap-3 px-2 py-3 mb-2 rounded-lg bg-slate-800/50">
-              <div className="h-8 w-8 rounded-full bg-blue-500 flex items-center justify-center text-white font-bold">
-                A
-              </div>
-              <div className="flex-1 overflow-hidden">
-                <p className="text-sm font-medium text-white truncate">
-                  Admin User
-                </p>
-                <p className="text-xs text-slate-400 truncate">
-                  admin@abenida.ph
-                </p>
-              </div>
+              {isUserLoading ? (
+                <>
+                  <Skeleton className="h-8 w-8 rounded-full bg-slate-700" />
+                  <div className="flex-1 space-y-1">
+                    <Skeleton className="h-4 w-24 bg-slate-700" />
+                    <Skeleton className="h-3 w-32 bg-slate-700" />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="h-8 w-8 rounded-full bg-blue-500 flex items-center justify-center text-white font-bold uppercase">
+                    {currentUser?.email?.charAt(0).toUpperCase() || "A"}
+                  </div>
+                  <div className="flex-1 overflow-hidden">
+                    <p className="text-sm font-medium text-white truncate capitalize">
+                      {currentUser?.email?.split("@")[0] || "Admin User"}
+                    </p>
+                    <p className="text-xs text-slate-400 truncate">
+                      {currentUser?.email || "admin@abenida.ph"}
+                    </p>
+                  </div>
+                </>
+              )}
             </div>
             <SidebarMenu>
               <SidebarMenuItem>
@@ -633,7 +663,8 @@ export default function FloodEventsPage() {
             <div className="flex items-center gap-3">
               <Button
                 onClick={() => setIsUploadOpen(true)}
-                className="bg-blue-600 hover:bg-blue-700 text-white gap-2"
+                variant="outline"
+                className="gap-2"
               >
                 <UploadCloud size={16} />
                 <span className="hidden sm:inline">Upload Event</span>
@@ -641,8 +672,7 @@ export default function FloodEventsPage() {
               </Button>
               <Button
                 onClick={() => navigate("/map")}
-                variant="outline"
-                className="gap-2 group hidden sm:flex"
+                className="bg-blue-600 hover:bg-blue-700 text-white gap-2 group"
               >
                 Open Map{" "}
                 <ArrowRight
