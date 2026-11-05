@@ -54,11 +54,11 @@ import {
   ChevronUp,
   PanelRightClose,
   PanelRightOpen,
-  Loader2,
   Hexagon,
   SlidersHorizontal,
   Home,
   LogIn,
+  CalendarDays,
 } from "lucide-react";
 
 import {
@@ -4631,39 +4631,80 @@ function EventSelector({
   onEventChange,
   availableEvents,
   compact,
+  bottomOffset = 0,
 }) {
+  const containerRef = useRef(null);
+
+  // Prevent Leaflet from hijacking the clicks
+  useEffect(() => {
+    if (!containerRef.current) return;
+    L.DomEvent.disableClickPropagation(containerRef.current);
+    L.DomEvent.disableScrollPropagation(containerRef.current);
+  }, []);
+
+  // Match the exact sizes used in BaseLayerSwitcher
+  const btnSize = compact ? 56 : 64;
+
   return (
     <div
+      ref={containerRef}
       style={{
         position: "absolute",
-        top: compact ? "124px" : "136px", // Below search/facility filters
-        left: compact ? "12px" : "16px",
+        left: 16, // Same left alignment as BaseLayerSwitcher
+        // 24 (BaseLayerSwitcher bottom) + btnSize + 12 (gap)
+        bottom: `${24 + btnSize + 12 + bottomOffset}px`,
         zIndex: 2000,
-        backgroundColor: "rgba(255,255,255,0.85)",
-        backdropFilter: "blur(10px)",
-        WebkitBackdropFilter: "blur(10px)",
-        borderRadius: "8px",
-        boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
-        padding: "4px",
-        border: "1px solid rgba(255,255,255,0.4)",
         pointerEvents: "auto",
-        minWidth: "160px",
       }}
     >
-      <Select value={selectedEvent} onValueChange={onEventChange}>
-        <SelectTrigger className="w-full h-8 text-xs font-semibold bg-transparent border-none focus:ring-0">
-          <SelectValue placeholder="Select event" />
-        </SelectTrigger>
-        <SelectContent>
+      <div
+        style={{
+          position: "relative",
+          backgroundColor: "rgba(255,255,255,0.88)",
+          backdropFilter: "blur(10px)",
+          WebkitBackdropFilter: "blur(10px)",
+          borderRadius: "14px", // Same border radius as BaseLayerSwitcher
+          boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+          border: "1px solid rgba(255,255,255,0.4)",
+          width: btnSize, // Match width
+          height: btnSize, // Match height
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <CalendarDays size={compact ? 20 : 24} className="text-slate-700" />
+
+        {/* Invisible native select overlaid on top */}
+        <select
+          value={selectedEvent}
+          onChange={(e) => onEventChange(e.target.value)}
+          title={
+            selectedEvent === "overall"
+              ? "Overall Event"
+              : selectedEvent.replace(/_/g, " ").toUpperCase()
+          }
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            opacity: 0,
+            cursor: "pointer",
+            appearance: "none",
+            WebkitAppearance: "none",
+            MozAppearance: "none",
+          }}
+        >
           {availableEvents.map((ev) => (
-            <SelectItem key={ev} value={ev} className="text-xs">
+            <option key={ev} value={ev}>
               {ev === "overall"
                 ? "Overall Event"
                 : ev.replace(/_/g, " ").toUpperCase()}
-            </SelectItem>
+            </option>
           ))}
-        </SelectContent>
-      </Select>
+        </select>
+      </div>
     </div>
   );
 }
@@ -5246,6 +5287,7 @@ function FloodMap() {
           onEventChange={setSelectedEvent}
           availableEvents={availableEvents}
           compact={compact}
+          bottomOffset={showPeek ? PEEK_HEIGHT : 0}
         />
         <FacilityTypeControl
           facilityTypes={facilityTypes}
