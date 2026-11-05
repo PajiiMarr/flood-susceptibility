@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useNavigate } from "react-router-dom";
 import { Mail, Lock, ArrowRight, Map } from "lucide-react";
@@ -29,12 +29,28 @@ const CONTOURS = Array.from({ length: 18 }, (_, i) =>
   contourPath(400, 400, 20 + i * 30, i * 0.4),
 );
 
-export default function LoginPage({ onNavigateToRegister, onNavigateHome }) {
+export default function LoginPage({
+  onNavigateToRegister,
+  onNavigateHome,
+  onNavigateToForgotPassword,
+}) {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+
+  useEffect(() => {
+    const checkActiveSession = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (session) {
+        navigate("/dashboard", { replace: true });
+      }
+    };
+    checkActiveSession();
+  }, [navigate]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -83,7 +99,6 @@ export default function LoginPage({ onNavigateToRegister, onNavigateHome }) {
         </div>
 
         <div className="relative z-10 max-w-lg">
-          {/* Forced white text via inline styles */}
           <h1
             style={{ color: "#ffffff" }}
             className="mb-4 text-4xl font-bold leading-tight"
@@ -165,12 +180,13 @@ export default function LoginPage({ onNavigateToRegister, onNavigateHome }) {
                   >
                     Password
                   </label>
-                  <a
-                    href="#"
+                  <button
+                    type="button"
+                    onClick={onNavigateToForgotPassword}
                     className="text-sm font-medium text-blue-600 hover:text-blue-700"
                   >
                     Forgot password?
-                  </a>
+                  </button>
                 </div>
                 <div className="relative">
                   <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
