@@ -3,12 +3,8 @@ import { useNavigate } from "react-router-dom";
 import {
   Map,
   LayoutDashboard,
-  Database,
-  Settings,
   LogOut,
-  Layers,
   ArrowRight,
-  MapPin,
   CalendarDays,
   CloudRain,
   Wind,
@@ -550,8 +546,8 @@ export default function FloodEventsPage() {
   return (
     <SidebarProvider>
       <div className="flex h-screen w-full bg-slate-50 font-sans overflow-hidden">
-        <Sidebar className="bg-slate-900 border-r border-slate-800 [&_[data-sidebar=sidebar]]:bg-slate-900 [&_[data-sidebar=sidebar]]:text-slate-300">
-          <SidebarHeader className="h-20 border-b border-slate-800 p-0">
+        <Sidebar className="bg-slate-900 border-r border-slate-800 [&_[data-sidebar=sidebar]]:bg-slate-900 [&_[data-sidebar=sidebar]]:border-slate-800">
+          <SidebarHeader className="h-20 border-b border-slate-800 p-0 bg-slate-900">
             <div className="flex h-full w-full items-center px-4">
               <Map className="h-8 w-8 text-blue-500 mr-3 shrink-0" />
               <span className="text-xl font-extrabold tracking-tight uppercase text-white">
@@ -559,14 +555,14 @@ export default function FloodEventsPage() {
               </span>
             </div>
           </SidebarHeader>
-          <SidebarContent className="mt-4">
-            <SidebarGroup>
-              <SidebarGroupContent>
-                <SidebarMenu className="gap-2 px-2">
+          <SidebarContent className="pt-4 bg-slate-900">
+            <SidebarGroup className="bg-slate-900">
+              <SidebarGroupContent className="bg-slate-900">
+                <SidebarMenu className="gap-2 px-2 bg-slate-900">
                   <SidebarMenuItem>
                     <SidebarMenuButton
                       onClick={() => navigate("/dashboard")}
-                      className="h-11 px-4 text-sm font-medium transition-all duration-200 hover:bg-slate-800 hover:text-white"
+                      className="h-11 px-4 text-sm font-medium text-slate-300 transition-all duration-200 hover:bg-slate-800 hover:text-white"
                     >
                       <LayoutDashboard size={18} />
                       <span>Dashboard Overview</span>
@@ -576,44 +572,17 @@ export default function FloodEventsPage() {
                     <SidebarMenuButton
                       isActive={true}
                       onClick={() => navigate("/events")}
-                      className="h-11 px-4 text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 hover:text-white transition-all duration-200"
+                      className="h-11 px-4 text-sm font-medium bg-white text-slate-900 shadow-sm hover:bg-slate-100 hover:text-slate-900 transition-all duration-200"
                     >
                       <CalendarDays size={18} />
                       <span>Flood Events</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton
-                      onClick={() => navigate("/map")}
-                      className="h-11 px-4 text-sm font-medium hover:bg-slate-800 hover:text-white"
-                    >
-                      <MapPin size={18} />
-                      <span>Interactive Map</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton className="h-11 px-4 text-sm font-medium hover:bg-slate-800 hover:text-white">
-                      <Database size={18} />
-                      <span>Datasets</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton className="h-11 px-4 text-sm font-medium hover:bg-slate-800 hover:text-white">
-                      <Layers size={18} />
-                      <span>Model Registry</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton className="h-11 px-4 text-sm font-medium hover:bg-slate-800 hover:text-white">
-                      <Settings size={18} />
-                      <span>Settings</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
           </SidebarContent>
-          <SidebarFooter className="p-4 border-t border-slate-800">
+          <SidebarFooter className="p-4 border-t border-slate-800 bg-slate-900">
             <div className="flex items-center gap-3 px-2 py-3 mb-2 rounded-lg bg-slate-800/50">
               <div className="h-8 w-8 rounded-full bg-blue-500 flex items-center justify-center text-white font-bold">
                 A
@@ -806,19 +775,26 @@ export default function FloodEventsPage() {
                 <UploadCloud className="h-5 w-5 text-blue-600" />
                 Upload New Event Data
               </SheetTitle>
+              <SheetDescription>
+                Add a new historical flood event by providing the impact data
+                and uploading the validated GeoTIFF outputs.
+              </SheetDescription>
             </SheetHeader>
             <div className="flex-1 overflow-y-auto p-4">{formContent}</div>
           </SheetContent>
         </Sheet>
       ) : (
         <Dialog open={isUploadOpen} onOpenChange={setIsUploadOpen}>
-          {/* Added !max-w-6xl and sm:max-w-6xl to force the width override */}
           <DialogContent className="w-[95vw] !max-w-6xl sm:!max-w-6xl max-h-[90vh] p-6 overflow-y-auto">
             <DialogHeader className="mb-6">
               <DialogTitle className="flex items-center gap-2">
                 <UploadCloud className="h-5 w-5 text-blue-600" />
                 Upload New Event Data
               </DialogTitle>
+              <DialogDescription>
+                Add a new historical flood event by providing the impact data
+                and uploading the validated GeoTIFF outputs.
+              </DialogDescription>
             </DialogHeader>
             {formContent}
           </DialogContent>
