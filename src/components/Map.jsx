@@ -1016,10 +1016,8 @@ function MapResizer() {
 }
 
 function LegendControl({
-  fsiVisible, // barangay choropleth toggle
+  fsiVisible,
   onToggleFsi,
-  rasterVisible, // server susceptibility raster toggle
-  onToggleRaster,
   compact = false,
   legendOpen,
   setLegendOpen,
@@ -1027,7 +1025,6 @@ function LegendControl({
   const map = useMap();
   const divRef = useRef(null);
   const toggleRef = useRef(onToggleFsi);
-  const rasterToggleRef = useRef(onToggleRaster);
   const compactRef = useRef(compact);
   const switchRootRef = useRef(null);
   const switchContainerRef = useRef(null);
@@ -1037,9 +1034,7 @@ function LegendControl({
   useEffect(() => {
     toggleRef.current = onToggleFsi;
   }, [onToggleFsi]);
-  useEffect(() => {
-    rasterToggleRef.current = onToggleRaster;
-  }, [onToggleRaster]);
+
   useEffect(() => {
     compactRef.current = compact;
   }, [compact]);
@@ -1105,10 +1100,9 @@ function LegendControl({
             `<span style="width:8px;height:8px;border-radius:50%;background:${c};display:inline-block;"></span>`,
         )
         .join("");
-      const rasterDot = `<span title="Raster" style="width:8px;height:8px;border-radius:2px;background:${rasterVisible ? "#059669" : "#cbd5e1"};display:inline-block;margin-left:4px;"></span>`;
       div.innerHTML = `
-        <div style="display:flex;align-items:center;gap:6px;opacity:${fsiVisible || rasterVisible ? 1 : 0.5};">
-          <span style="display:flex;gap:3px;">${dots}${rasterDot}</span>
+        <div style="display:flex;align-items:center;gap:6px;opacity:${fsiVisible ? 1 : 0.5};">
+          <span style="display:flex;gap:3px;">${dots}</span>
           <strong style="font-size:11px;">FSI</strong>
           <span style="font-size:9px;color:#777;">▾</span>
         </div>`;
@@ -1180,7 +1174,7 @@ function LegendControl({
       body.appendChild(row);
     }
     div.appendChild(body);
-  }, [compact, collapsed, setLegendOpen, rasterVisible, fsiVisible]);
+  }, [compact, collapsed, setLegendOpen, fsiVisible]);
 
   useEffect(() => {
     if (switchRootRef.current) {
@@ -1194,7 +1188,7 @@ function LegendControl({
           }}
         >
           <label
-            title="Barangay choropleth (FSI colors)"
+            title="Toggle Flood Susceptibility layer"
             style={{
               display: "flex",
               alignItems: "center",
@@ -1213,29 +1207,6 @@ function LegendControl({
                 compact ? "h-3.5 w-7" : "h-4 w-8",
               )}
             />
-            Choropleth
-          </label>
-          <label
-            title="Server-generated susceptibility raster"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "4px",
-              cursor: "pointer",
-              fontSize: compact ? "8px" : "9px",
-              color: "#444",
-              whiteSpace: "nowrap",
-            }}
-          >
-            <Switch
-              checked={rasterVisible}
-              onCheckedChange={() => rasterToggleRef.current?.()}
-              className={cn(
-                "data-[state=checked]:bg-emerald-600 data-[state=unchecked]:bg-slate-300 transition-colors",
-                compact ? "h-3.5 w-7" : "h-4 w-8",
-              )}
-            />
-            Raster
           </label>
         </div>,
       );
@@ -1246,7 +1217,7 @@ function LegendControl({
         row.style.opacity = fsiVisible ? "1" : "0.4";
       });
     }
-  }, [fsiVisible, rasterVisible, compact]);
+  }, [fsiVisible, compact]);
 
   return null;
 }
@@ -4631,7 +4602,6 @@ function EventSelector({
   onEventChange,
   availableEvents,
   compact,
-  bottomOffset = 0,
 }) {
   const containerRef = useRef(null);
 
@@ -4650,9 +4620,9 @@ function EventSelector({
       ref={containerRef}
       style={{
         position: "absolute",
-        left: 16, // Same left alignment as BaseLayerSwitcher
-        // 24 (BaseLayerSwitcher bottom) + btnSize + 12 (gap)
-        bottom: `${24 + btnSize + 12 + bottomOffset}px`,
+        left: 16,
+        // Stack it below the FacilityTypeControl (which is at 124/136)
+        top: compact ? "176px" : "192px",
         zIndex: 2000,
         pointerEvents: "auto",
       }}
@@ -4663,11 +4633,11 @@ function EventSelector({
           backgroundColor: "rgba(255,255,255,0.88)",
           backdropFilter: "blur(10px)",
           WebkitBackdropFilter: "blur(10px)",
-          borderRadius: "14px", // Same border radius as BaseLayerSwitcher
+          borderRadius: "14px",
           boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
           border: "1px solid rgba(255,255,255,0.4)",
-          width: btnSize, // Match width
-          height: btnSize, // Match height
+          width: btnSize,
+          height: btnSize,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -5135,7 +5105,6 @@ function FloodMap() {
             font-family: var(--font-display);
           }
         `}</style>
-
         <MapContainer
           center={position}
           zoom={10}
@@ -5222,8 +5191,6 @@ function FloodMap() {
           <LegendControl
             fsiVisible={fsiVisible}
             onToggleFsi={handleToggleFsi}
-            rasterVisible={rasterVisible}
-            onToggleRaster={handleToggleRaster}
             compact={compact}
             legendOpen={legendOpen}
             setLegendOpen={setLegendOpen}
@@ -5237,7 +5204,6 @@ function FloodMap() {
             setQgisOpen={setQgisOpen}
           />
         </MapContainer>
-
         {isDesktop && (
           <Button
             type="button"
@@ -5257,7 +5223,6 @@ function FloodMap() {
             )}
           </Button>
         )}
-
         {showPeek && (
           <button
             type="button"
@@ -5287,7 +5252,6 @@ function FloodMap() {
           onEventChange={setSelectedEvent}
           availableEvents={availableEvents}
           compact={compact}
-          bottomOffset={showPeek ? PEEK_HEIGHT : 0}
         />
         <FacilityTypeControl
           facilityTypes={facilityTypes}
@@ -5312,7 +5276,6 @@ function FloodMap() {
           visible={fsiVisible}
           compact={compact}
         />
-
         <div onClickCapture={() => setOpenOverlay(null)}>
           <BaseLayerSwitcher
             baseLayer={baseLayer}
