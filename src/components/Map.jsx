@@ -3381,7 +3381,24 @@ function QGISHoverTooltip({ rasterDataRef }) {
   useEffect(() => {
     const container = map.getContainer();
     const tooltipEl = document.createElement("div");
-    tooltipEl.style.cssText = `position: absolute; z-index: 1000; pointer-events: none; background: rgba(0,0,0,0.78); color: #fff; font-size: 11px; font-family: Arial, sans-serif; padding: 6px 9px; border-radius: 4px; line-height: 1.5; display: none; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,0.3);`;
+    tooltipEl.style.cssText = `
+      position: absolute;
+      left: 0;
+      top: 0;
+      z-index: 9999;
+      pointer-events: none;
+      background: rgba(0, 0, 0, 0.85);
+      color: #fff;
+      font-size: 11px;
+      font-family: Arial, sans-serif;
+      padding: 6px 10px;
+      border-radius: 4px;
+      line-height: 1.5;
+      display: none;
+      white-space: nowrap;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+      will-change: transform;
+    `;
     container.appendChild(tooltipEl);
 
     const fmt = (v) => {
@@ -3391,40 +3408,68 @@ function QGISHoverTooltip({ rasterDataRef }) {
       return v.toFixed(2);
     };
 
+    // Native barangay tooltip is sticky + centered on the cursor, so this
+    // sits just below it, using cursor position only (no DOM reads).
+    const NATIVE_HALF_HEIGHT = 40; // approx half height of .barangay-label
+    const GAP = 8;
+
+    let lastHtml = "";
+
     const onMove = (e) => {
-      const keys = Object.keys(rasterDataRef.current || {});
-      if (keys.length === 0) {
-        tooltipEl.style.display = "none";
-        return;
-      }
+      const data = rasterDataRef.current || {};
       const lines = [];
-      for (const key of keys) {
-        const info = rasterDataRef.current[key];
+      for (const key of Object.keys(data)) {
+        const info = data[key];
         if (!info) continue;
         const v = getRasterValueAtLatLng(e.latlng, info);
         if (v == null) continue;
         const cfg = QGIS_LAYER_CONFIGS[key];
         lines.push(
-          `<strong>${cfg?.name || key}:</strong> ${fmt(v)}${cfg?.unit || ""}`,
+          `<strong style="color:#fff; font-weight:600;">${cfg?.name || key}:</strong> <span style="color:#e0e0e0;">${fmt(v)}${cfg?.unit || ""}</span>`,
         );
       }
+
       if (lines.length === 0) {
         tooltipEl.style.display = "none";
         return;
       }
-      tooltipEl.innerHTML = lines.join("<br>");
+
+      const html = lines.join("<br>");
+      if (html !== lastHtml) {
+        tooltipEl.innerHTML = html;
+        lastHtml = html;
+      }
       tooltipEl.style.display = "block";
-      const p = map.latLngToContainerPoint(e.latlng);
+
+      const p = e.containerPoint;
       const cw = container.clientWidth;
+      const ch = container.clientHeight;
       const tw = tooltipEl.offsetWidth;
-      tooltipEl.style.left = `${p.x + 16 + tw > cw ? p.x - tw - 16 : p.x + 16}px`;
-      tooltipEl.style.top = `${p.y + 16}px`;
+      const th = tooltipEl.offsetHeight;
+
+      // Center horizontally on cursor, below the native tooltip
+      let left = p.x - tw / 2;
+      let top = p.y + NATIVE_HALF_HEIGHT + GAP;
+
+      if (left + tw > cw - 8) left = cw - tw - 8;
+      if (left < 8) left = 8;
+
+      // Flip above the native tooltip if it would overflow the bottom
+      if (top + th > ch - 8) {
+        top = p.y - NATIVE_HALF_HEIGHT - GAP - th;
+      }
+      if (top < 8) top = 8;
+
+      tooltipEl.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0)`;
     };
+
     const onLeave = () => {
       tooltipEl.style.display = "none";
     };
+
     map.on("mousemove", onMove);
     container.addEventListener("mouseleave", onLeave);
+
     return () => {
       map.off("mousemove", onMove);
       container.removeEventListener("mouseleave", onLeave);
