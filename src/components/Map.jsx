@@ -841,11 +841,15 @@ async function fetchServerFsiBatch(
   points,
   model = DEFAULT_FSI_MODEL,
   event = "overall",
+  simulationOverride = null,
 ) {
+  const body = { model, event, explain: false, points };
+  if (simulationOverride) body.simulation_override = simulationOverride;
+
   const res = await fetch(`${API_BASE_URL}/api/predict/batch`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, event, explain: false, points }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Batch failed: HTTP ${res.status}`);
   return res.json();
@@ -855,11 +859,17 @@ async function resolveBarangayFsi(
   features,
   model = DEFAULT_FSI_MODEL,
   event = "overall",
+  simulationOverride = null,
 ) {
-  const cacheKey = `${event}_${model}`;
+  // Bypass cache when simulating (key includes the override payload)
+  const cacheKey = simulationOverride
+    ? `sim_${event}_${model}_${JSON.stringify(simulationOverride)}`
+    : `${event}_${model}`;
+
   if (APP_CACHE.fsi[cacheKey]) return APP_CACHE.fsi[cacheKey];
 
   const result = new Map();
+
   if (!USE_SERVER) {
     for (const f of features) {
       const name = f.properties?.adm4_name || "";
@@ -873,8 +883,9 @@ async function resolveBarangayFsi(
     APP_CACHE.fsi[cacheKey] = result;
     return result;
   }
-  const order = [],
-    points = [];
+
+  const order = [];
+  const points = [];
   for (const f of features) {
     const name = f.properties?.adm4_name || "";
     const centroid = getFeatureCentroid(f);
@@ -893,11 +904,16 @@ async function resolveBarangayFsi(
   if (points.length === 0) return result;
 
   try {
-    const data = await fetchServerFsiBatch(points, model, event);
+    const data = await fetchServerFsiBatch(
+      points,
+      model,
+      event,
+      simulationOverride,
+    );
     const results = data.results || [];
     for (let i = 0; i < order.length; i++) {
-      const r = results[i],
-        o = order[i];
+      const r = results[i];
+      const o = order[i];
       if (r && !r.error && typeof r.probability === "number") {
         result.set(o.name, {
           risk: r.risk_class || "Low Risk",
@@ -916,13 +932,14 @@ async function resolveBarangayFsi(
       }
     }
   } catch (err) {
-    for (const o of order)
+    for (const o of order) {
       result.set(o.name, {
         risk: getRandomRiskLevel(),
         probability: null,
         centroid: o.centroid,
         top_factors: [],
       });
+    }
   }
   APP_CACHE.fsi[cacheKey] = result;
   return result;
@@ -1400,10 +1417,6 @@ function MapModeControl({ mode, onModeChange, compact = false }) {
     <div
       ref={containerRef}
       style={{
-        position: "absolute",
-        top: compact ? "70px" : "84px",
-        left: compact ? "12px" : "16px",
-        zIndex: 2000,
         backgroundColor: "rgba(255,255,255,0.85)",
         backdropFilter: "blur(10px)",
         WebkitBackdropFilter: "blur(10px)",
@@ -1413,7 +1426,6 @@ function MapModeControl({ mode, onModeChange, compact = false }) {
         display: "flex",
         gap: "4px",
         border: "1px solid rgba(255,255,255,0.4)",
-        pointerEvents: "auto",
       }}
     >
       {modes.map(({ key, label, title, Icon }) => {
@@ -1422,7 +1434,6 @@ function MapModeControl({ mode, onModeChange, compact = false }) {
           <button
             key={key}
             type="button"
-            // Clicking the active mode deselects it ("none")
             onClick={() => onModeChange(active ? "none" : key)}
             style={active ? activeStyle : inactiveStyle}
             title={active ? `${label} mode (click to turn off)` : title}
@@ -1526,16 +1537,10 @@ function MapSearchControl({
     <div
       ref={containerRef}
       style={{
-        position: "absolute",
-        top: compact ? "12px" : "16px",
-        left: compact ? "12px" : "16px",
-        zIndex: 2000,
         display: "flex",
         gap: "8px",
         alignItems: "stretch",
-        pointerEvents: "auto",
-        width: compact ? "calc(100% - 24px)" : "380px",
-        maxWidth: compact ? "none" : "calc(100% - 32px)",
+        width: "100%",
       }}
     >
       {onHome && (
@@ -2418,7 +2423,8 @@ function ZamboangaMask({
   mapMode,
   selectedBarangayName,
   fsiModel,
-  selectedEvent, // <-- Added
+  selectedEvent,
+  simulationOverride, // <-- NEW
   onFsiStatusChange,
 }) {
   const map = useMap();
@@ -2569,10 +2575,13 @@ function ZamboangaMask({
 
         const barangayData = barangayDataRef.current;
         const popMap = popMapRef.current;
+
+        // Pass the override to the resolver
         const fsiMap = await resolveBarangayFsi(
           barangayData.features,
           fsiModel,
           selectedEvent,
+          simulationOverride, // <-- NEW
         );
         if (cancelled) return;
 
@@ -2703,7 +2712,7 @@ function ZamboangaMask({
     return () => {
       cancelled = true;
     };
-  }, [map, fsiModel, selectedEvent]); // <-- Added selectedEvent
+  }, [map, fsiModel, selectedEvent, simulationOverride]); // <-- Added simulationOverride
 
   useEffect(() => {
     const layer = barangayLayerRef.current;
@@ -2837,16 +2846,7 @@ function FacilityTypeControl({
   );
 
   return (
-    <div
-      ref={ref}
-      style={{
-        position: "absolute",
-        top: compact ? "124px" : "136px",
-        left: compact ? "12px" : "16px",
-        zIndex: 2000,
-        pointerEvents: "auto",
-      }}
-    >
+    <div ref={ref}>
       {!open ? (
         <button
           type="button"
@@ -2951,6 +2951,199 @@ function FacilityTypeControl({
                 </button>
               );
             })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SimulationControl({ onApply, currentOverride, compact }) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  const rawFeatures = [
+    {
+      key: "chirps",
+      label: "CHIRPS Rainfall (mm)",
+      min: -100,
+      max: 300,
+      step: 10,
+    },
+    { key: "gpm", label: "GPM Rainfall (mm)", min: -100, max: 300, step: 10 },
+    { key: "dem", label: "Elevation (m)", min: -5, max: 5, step: 0.5 },
+    { key: "hand", label: "HAND (m)", min: -5, max: 5, step: 0.5 },
+    { key: "slope", label: "Slope (°)", min: -5, max: 5, step: 0.5 },
+    { key: "twi", label: "Wetness Index (TWI)", min: -5, max: 5, step: 0.5 },
+    {
+      key: "flow_accumulation",
+      label: "Flow Accumulation",
+      min: -1000,
+      max: 3000,
+      step: 100,
+    },
+    {
+      key: "distance_to_river",
+      label: "Dist. to River (m)",
+      min: -100,
+      max: 100,
+      step: 10,
+    },
+  ];
+
+  const [values, setValues] = useState(() => {
+    const initial = {};
+    rawFeatures.forEach((f) => {
+      initial[f.key] = currentOverride?.[f.key] || 0;
+    });
+    return initial;
+  });
+
+  const handleChange = (key, val) => {
+    const newValues = { ...values, [key]: Number(val) };
+    setValues(newValues);
+
+    const activeOverrides = {};
+    Object.keys(newValues).forEach((k) => {
+      if (newValues[k] !== 0) activeOverrides[k] = newValues[k];
+    });
+
+    onApply(Object.keys(activeOverrides).length > 0 ? activeOverrides : null);
+  };
+
+  const handleReset = () => {
+    const resetValues = {};
+    rawFeatures.forEach((f) => {
+      resetValues[f.key] = 0;
+    });
+    setValues(resetValues);
+    onApply(null);
+  };
+
+  const hasActiveOverrides =
+    currentOverride && Object.keys(currentOverride).length > 0;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "flex-start",
+      }}
+    >
+      {!isOpen ? (
+        <button
+          onClick={() => setIsOpen(true)}
+          style={{
+            background: "rgba(255,255,255,0.95)",
+            padding: "8px 12px",
+            borderRadius: 8,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+            border: hasActiveOverrides
+              ? "2px solid #2563eb"
+              : "1px solid rgba(255,255,255,0.4)",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            cursor: "pointer",
+            fontFamily: "Arial",
+            fontSize: 12,
+            fontWeight: "bold",
+            color: hasActiveOverrides ? "#2563eb" : "#333",
+          }}
+        >
+          <SlidersHorizontal size={16} />
+          {hasActiveOverrides ? "Simulation Active" : "Simulate"}
+        </button>
+      ) : (
+        <div
+          style={{
+            background: "rgba(255,255,255,0.95)",
+            padding: 12,
+            borderRadius: 8,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+            width: 260,
+            fontFamily: "Arial",
+            maxHeight: "60vh",
+            overflowY: "auto",
+            border: "1px solid #e2e8f0",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 10,
+            }}
+          >
+            <h4 style={{ margin: 0, fontSize: 12, fontWeight: "bold" }}>
+              Adjust Raw Features
+            </h4>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button
+                onClick={handleReset}
+                style={{
+                  fontSize: 10,
+                  padding: "2px 6px",
+                  cursor: "pointer",
+                  background: "#f1f5f9",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: 4,
+                }}
+              >
+                Reset
+              </button>
+              <button
+                onClick={() => setIsOpen(false)}
+                style={{
+                  fontSize: 12,
+                  padding: "2px 6px",
+                  cursor: "pointer",
+                  background: "transparent",
+                  border: "none",
+                  color: "#666",
+                  fontWeight: "bold",
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {rawFeatures.map((f) => (
+              <div key={f.key}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    fontSize: 10,
+                    marginBottom: 2,
+                    color: "#475569",
+                  }}
+                >
+                  <span>{f.label}</span>
+                  <span
+                    style={{
+                      fontWeight: "bold",
+                      color: values[f.key] !== 0 ? "#2563eb" : "#94a3b8",
+                    }}
+                  >
+                    {values[f.key] > 0 ? "+" : ""}
+                    {values[f.key]}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={f.min}
+                  max={f.max}
+                  step={f.step}
+                  value={values[f.key]}
+                  onChange={(e) => handleChange(f.key, e.target.value)}
+                  style={{ width: "100%", cursor: "pointer" }}
+                />
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -3376,6 +3569,68 @@ function QGISRasterLayer({
   return null;
 }
 
+function getBarangayRasterStats(barangayFeature, rasterData) {
+  if (!barangayFeature || !rasterData) return null;
+  const { values, width, height, bbox, noDataValue } = rasterData;
+  const [minX, minY, maxX, maxY] = bbox;
+
+  const bboxWGS84 = getBoundingBox(barangayFeature);
+  if (!bboxWGS84) return null;
+
+  const [west, south, east, north] = bboxWGS84;
+  const [utmWest, utmSouth] = proj4("EPSG:4326", "EPSG:32651", [west, south]);
+  const [utmEast, utmNorth] = proj4("EPSG:4326", "EPSG:32651", [east, north]);
+
+  const startCol = Math.max(
+    0,
+    Math.floor(((utmWest - minX) / (maxX - minX)) * width),
+  );
+  const endCol = Math.min(
+    width - 1,
+    Math.ceil(((utmEast - minX) / (maxX - minX)) * width),
+  );
+  const startRow = Math.max(
+    0,
+    Math.floor(((maxY - utmNorth) / (maxY - minY)) * height),
+  );
+  const endRow = Math.min(
+    height - 1,
+    Math.ceil(((maxY - utmSouth) / (maxY - minY)) * height),
+  );
+
+  let min = Infinity;
+  let max = -Infinity;
+  const step = 3; // Sample every 3rd pixel for performance
+
+  for (let row = startRow; row <= endRow; row += step) {
+    for (let col = startCol; col <= endCol; col += step) {
+      const idx = row * width + col;
+      const val = values[idx];
+
+      if (
+        val == null ||
+        Number.isNaN(val) ||
+        val === noDataValue ||
+        val < -9999
+      )
+        continue;
+
+      const utmX = minX + (col + 0.5) * ((maxX - minX) / width);
+      const utmY = maxY - (row + 0.5) * ((maxY - minY) / height);
+
+      const [lng, lat] = proj4("EPSG:32651", "EPSG:4326", [utmX, utmY]);
+
+      if (booleanPointInPolygon([lng, lat], barangayFeature)) {
+        if (val < min) min = val;
+        if (val > max) max = val;
+      }
+    }
+  }
+
+  if (min === Infinity) return null;
+  return { min, max };
+}
+
 function QGISHoverTooltip({ rasterDataRef }) {
   const map = useMap();
   useEffect(() => {
@@ -3777,12 +4032,11 @@ function SidebarSkeleton() {
   );
 }
 
-function BarangayCard({ barangay, onClear, event }) {
-  // <-- Added event
+function BarangayCard({ barangay, onClear, event, qgisStats }) {
   const { factors, loading, error } = useBarangayExplanation(
     barangay,
     DEFAULT_FSI_MODEL,
-    event, // <-- Added event
+    event,
   );
   if (!barangay) return null;
   const { name, risk, population, probability } = barangay;
@@ -3838,6 +4092,29 @@ function BarangayCard({ barangay, onClear, event }) {
         <p className="text-xs text-muted-foreground leading-relaxed">
           {message}
         </p>
+
+        {qgisStats && (
+          <div className="border-t pt-3">
+            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+              {qgisStats.layerName} (Local Range)
+            </h4>
+            <div className="flex justify-between text-sm mb-1">
+              <span className="text-muted-foreground">Min</span>
+              <span className="font-medium">
+                {formatRasterValue(qgisStats.min)}
+                {qgisStats.unit}
+              </span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-muted-foreground">Max</span>
+              <span className="font-medium">
+                {formatRasterValue(qgisStats.max)}
+                {qgisStats.unit}
+              </span>
+            </div>
+          </div>
+        )}
+
         {USE_SERVER && (
           <div className="border-t pt-3">
             <FactorsList factors={factors} loading={loading} error={error} />
@@ -3966,7 +4243,8 @@ function FacilityDetailsPanel({
   isLoadingBarangays = false,
   selectedFacility,
   onClearFacility,
-  selectedEvent, // <-- Added
+  selectedEvent,
+  qgisStats, // <-- New prop
 }) {
   const {
     mode = "idle",
@@ -4011,13 +4289,15 @@ function FacilityDetailsPanel({
               <BarangayCard
                 barangay={selectedBarangay}
                 onClear={onClearBarangay}
-                event={selectedEvent} // <-- Added
+                event={selectedEvent}
+                qgisStats={qgisStats} // <-- Pass down
               />
 
               <div className="space-y-3">
                 <h4 className="text-xs uppercase tracking-wide text-muted-foreground font-semibold">
                   Facilities in {selectedBarangay.name}
                 </h4>
+                {/* ... rest of the facilities list stays exactly the same ... */}
                 {facilitiesInBarangay.length === 0 ? (
                   <Card className="border-dashed border-slate-300 bg-slate-50">
                     <CardContent className="p-4 text-center text-sm text-slate-600">
@@ -4115,6 +4395,7 @@ function FacilityDetailsPanel({
         </>
       ) : (
         <>
+          {/* ... Marker mode logic stays the same ... */}
           <Button
             onClick={onUseMyLocation}
             disabled={mode === "loading"}
@@ -4650,76 +4931,61 @@ function EventSelector({
 }) {
   const containerRef = useRef(null);
 
-  // Prevent Leaflet from hijacking the clicks
   useEffect(() => {
     if (!containerRef.current) return;
     L.DomEvent.disableClickPropagation(containerRef.current);
     L.DomEvent.disableScrollPropagation(containerRef.current);
   }, []);
 
-  // Match the exact sizes used in BaseLayerSwitcher
   const btnSize = compact ? 56 : 64;
 
   return (
     <div
       ref={containerRef}
       style={{
-        position: "absolute",
-        left: 16,
-        // Stack it below the FacilityTypeControl (which is at 124/136)
-        top: compact ? "176px" : "192px",
-        zIndex: 2000,
-        pointerEvents: "auto",
+        position: "relative",
+        backgroundColor: "rgba(255,255,255,0.88)",
+        backdropFilter: "blur(10px)",
+        WebkitBackdropFilter: "blur(10px)",
+        borderRadius: "14px",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+        border: "1px solid rgba(255,255,255,0.4)",
+        width: btnSize,
+        height: btnSize,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
       }}
     >
-      <div
+      <CalendarDays size={compact ? 20 : 24} className="text-slate-700" />
+      <select
+        value={selectedEvent}
+        onChange={(e) => onEventChange(e.target.value)}
+        title={
+          selectedEvent === "overall"
+            ? "Overall Event"
+            : selectedEvent.replace(/_/g, " ").toUpperCase()
+        }
         style={{
-          position: "relative",
-          backgroundColor: "rgba(255,255,255,0.88)",
-          backdropFilter: "blur(10px)",
-          WebkitBackdropFilter: "blur(10px)",
-          borderRadius: "14px",
-          boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
-          border: "1px solid rgba(255,255,255,0.4)",
-          width: btnSize,
-          height: btnSize,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          opacity: 0,
+          cursor: "pointer",
+          appearance: "none",
+          WebkitAppearance: "none",
+          MozAppearance: "none",
         }}
       >
-        <CalendarDays size={compact ? 20 : 24} className="text-slate-700" />
-
-        {/* Invisible native select overlaid on top */}
-        <select
-          value={selectedEvent}
-          onChange={(e) => onEventChange(e.target.value)}
-          title={
-            selectedEvent === "overall"
+        {availableEvents.map((ev) => (
+          <option key={ev} value={ev}>
+            {ev === "overall"
               ? "Overall Event"
-              : selectedEvent.replace(/_/g, " ").toUpperCase()
-          }
-          style={{
-            position: "absolute",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-            opacity: 0,
-            cursor: "pointer",
-            appearance: "none",
-            WebkitAppearance: "none",
-            MozAppearance: "none",
-          }}
-        >
-          {availableEvents.map((ev) => (
-            <option key={ev} value={ev}>
-              {ev === "overall"
-                ? "Overall Event"
-                : ev.replace(/_/g, " ").toUpperCase()}
-            </option>
-          ))}
-        </select>
-      </div>
+              : ev.replace(/_/g, " ").toUpperCase()}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }
@@ -4737,12 +5003,13 @@ function FloodMap() {
   const [qgisLayerLoading, setQgisLayerLoading] = useState({});
   const [qgisLayerStats, setQgisLayerStats] = useState({});
   const [fsiVisible, setFsiVisible] = useState(true);
-  const [rasterVisible, setRasterVisible] = useState(false); // Default to false so choropleth is visible
+  const [rasterVisible, setRasterVisible] = useState(false);
   const [baseLayer, setBaseLayer] = useState("satellite");
   const [fsiStatus, setFsiStatus] = useState("boundaries");
   const navigate = useNavigate();
   const [selectedEvent, setSelectedEvent] = useState("overall");
   const [availableEvents, setAvailableEvents] = useState(["overall"]);
+  const [simulationOverride, setSimulationOverride] = useState(null);
 
   const [selection, setSelection] = useState({
     mode: "idle",
@@ -4760,8 +5027,7 @@ function FloodMap() {
   const [selectedBarangay, setSelectedBarangay] = useState(null);
   const [selectedFacility, setSelectedFacility] = useState(null);
 
-  // Overlay states
-  const [openOverlay, setOpenOverlay] = useState(null); // "facility" | null
+  const [openOverlay, setOpenOverlay] = useState(null);
   const [legendOpen, setLegendOpen] = useState(false);
   const [qgisOpen, setQgisOpen] = useState(false);
 
@@ -4834,8 +5100,35 @@ function FloodMap() {
   const resetHandlerRef = useRef(null);
   const qgisRasterDataRef = useRef({});
 
-  const hasQGISLayersActive = activeQGISLayers.length > 0;
   const activeLayerKey = activeQGISLayers[0] || null;
+
+  const barangayQGISStats = useMemo(() => {
+    if (
+      mapMode !== "barangay" ||
+      !selectedBarangay ||
+      !barangayData ||
+      !activeLayerKey
+    )
+      return null;
+
+    const feature = barangayData.features.find(
+      (f) => f.properties.adm4_name === selectedBarangay.name,
+    );
+    if (!feature) return null;
+
+    const rasterInfo = qgisRasterDataRef.current[activeLayerKey];
+    if (!rasterInfo) return null;
+
+    const stats = getBarangayRasterStats(feature, rasterInfo);
+    if (!stats) return null;
+
+    return {
+      layerName: QGIS_LAYER_CONFIGS[activeLayerKey].name,
+      unit: QGIS_LAYER_CONFIGS[activeLayerKey].unit,
+      min: stats.min,
+      max: stats.max,
+    };
+  }, [mapMode, selectedBarangay, barangayData, activeLayerKey, qgisLayerStats]);
 
   useEffect(() => {
     supabase
@@ -4983,7 +5276,10 @@ function FloodMap() {
     setFacilitiesVisible((v) => !v);
   }, []);
   const handleToggleFsi = useCallback(() => setFsiVisible((v) => !v), []);
-  const handleToggleRaster = useCallback(() => setRasterVisible((v) => !v), []);
+
+  const handleApplySimulation = (overrideObject) => {
+    setSimulationOverride(overrideObject);
+  };
 
   const effectiveHiddenFacilities = useMemo(() => {
     const hidden = new Set();
@@ -5088,6 +5384,7 @@ function FloodMap() {
         selectedFacility={selectedFacility}
         onClearFacility={() => setSelectedFacility(null)}
         selectedEvent={selectedEvent}
+        qgisStats={barangayQGISStats}
       />
     </div>
   );
@@ -5165,22 +5462,22 @@ function FloodMap() {
           />
           <CustomPanes />
           <MapResizer />
-          {/* Render the continuous raster here */}
           <FSIRasterLayer
             model={DEFAULT_FSI_MODEL}
-            event={selectedEvent} // <-- Add
+            event={selectedEvent}
             visible={rasterVisible}
             cityBoundary={cityBoundary}
           />
           <ZamboangaMask
             onBoundaryLoaded={handleBoundaryLoaded}
             onBarangaysLoaded={handleBarangaysLoaded}
-            rasterActive={rasterVisible} // <-- FIX: Ties choropleth opacity to the raster toggle
+            rasterActive={rasterVisible}
             fsiVisible={fsiVisible}
             mapMode={mapMode}
             selectedBarangayName={selectedBarangay?.name || null}
             fsiModel={DEFAULT_FSI_MODEL}
-            selectedEvent={selectedEvent} // <-- Add
+            selectedEvent={selectedEvent}
+            simulationOverride={simulationOverride}
             onFsiStatusChange={setFsiStatus}
           />
 
@@ -5249,6 +5546,7 @@ function FloodMap() {
             setQgisOpen={setQgisOpen}
           />
         </MapContainer>
+
         {isDesktop && (
           <Button
             type="button"
@@ -5287,35 +5585,81 @@ function FloodMap() {
             </span>
           </button>
         )}
-        <MapModeControl
-          mode={mapMode}
-          onModeChange={handleModeChange}
-          compact={compact}
-        />
-        <EventSelector
-          selectedEvent={selectedEvent}
-          onEventChange={setSelectedEvent}
-          availableEvents={availableEvents}
-          compact={compact}
-        />
-        <FacilityTypeControl
-          facilityTypes={facilityTypes}
-          selectedTypes={selectedTypes}
-          onSelectAllTypes={handleSelectAllTypes}
-          onToggleType={handleToggleType}
-          facilitiesVisible={facilitiesVisible}
-          onToggleFacilitiesVisibility={handleToggleFacilitiesVisibility}
-          compact={compact}
-          openOverlay={openOverlay}
-          setOpenOverlay={setOpenOverlay}
-        />
-        <MapSearchControl
-          cityBoundary={cityBoundary}
-          onSelectLocation={handleSearchSelect}
-          compact={compact}
-          onHome={() => navigate("/")}
-          openOverlay={openOverlay}
-        />
+
+        {/* Left Side Controls Wrapper */}
+        <div
+          style={{
+            position: "absolute",
+            top: compact ? "12px" : "16px",
+            left: compact ? "12px" : "16px",
+            zIndex: 2000,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-start",
+            gap: "12px",
+            pointerEvents: "none",
+            maxHeight: "calc(100vh - 100px)",
+            overflowY: "auto",
+            paddingRight: "10px",
+            paddingBottom: "20px",
+          }}
+        >
+          <div
+            style={{
+              pointerEvents: "auto",
+              width: compact ? "calc(100vw - 24px)" : "380px",
+              maxWidth: "calc(100vw - 32px)",
+            }}
+          >
+            <MapSearchControl
+              cityBoundary={cityBoundary}
+              onSelectLocation={handleSearchSelect}
+              compact={compact}
+              onHome={() => navigate("/")}
+              openOverlay={openOverlay}
+            />
+          </div>
+
+          <div style={{ pointerEvents: "auto" }}>
+            <MapModeControl
+              mode={mapMode}
+              onModeChange={handleModeChange}
+              compact={compact}
+            />
+          </div>
+
+          <div style={{ pointerEvents: "auto" }}>
+            <FacilityTypeControl
+              facilityTypes={facilityTypes}
+              selectedTypes={selectedTypes}
+              onSelectAllTypes={handleSelectAllTypes}
+              onToggleType={handleToggleType}
+              facilitiesVisible={facilitiesVisible}
+              onToggleFacilitiesVisibility={handleToggleFacilitiesVisibility}
+              compact={compact}
+              openOverlay={openOverlay}
+              setOpenOverlay={setOpenOverlay}
+            />
+          </div>
+
+          <div style={{ pointerEvents: "auto" }}>
+            <SimulationControl
+              onApply={handleApplySimulation}
+              currentOverride={simulationOverride}
+              compact={compact}
+            />
+          </div>
+
+          <div style={{ pointerEvents: "auto" }}>
+            <EventSelector
+              selectedEvent={selectedEvent}
+              onEventChange={setSelectedEvent}
+              availableEvents={availableEvents}
+              compact={compact}
+            />
+          </div>
+        </div>
+
         <FsiLoadingIndicator
           status={fsiStatus}
           visible={fsiVisible}
