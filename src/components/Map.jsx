@@ -140,6 +140,26 @@ const LEGEND_THEME = {
   },
 };
 
+const UNIFORM_CARD_STYLE = {
+  width: "160px",
+  height: "40px",
+  backgroundColor: "rgba(255,255,255,0.95)",
+  backdropFilter: "blur(10px)",
+  borderRadius: "8px",
+  boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+  border: "1px solid rgba(255,255,255,0.4)",
+  display: "flex",
+  alignItems: "center",
+  padding: "0 12px",
+  cursor: "pointer",
+  fontFamily: "Arial, sans-serif",
+  fontSize: "12px",
+  fontWeight: "600",
+  color: "#333",
+  boxSizing: "border-box",
+  transition: "all 0.15s ease",
+};
+
 const px = (n) => `${n}px`;
 const PEEK_HEIGHT = 52;
 const getLegendTheme = (compact) =>
@@ -1424,83 +1444,47 @@ function MapControls({
 }
 
 function MapModeControl({ mode, onModeChange, compact = false }) {
-  const containerRef = useRef(null);
-  useEffect(() => {
-    if (!containerRef.current) return;
-    L.DomEvent.disableClickPropagation(containerRef.current);
-    L.DomEvent.disableScrollPropagation(containerRef.current);
-  }, []);
-
-  const baseBtnStyle = {
-    padding: "7px 9px",
-    fontSize: "11px",
-    fontFamily: "Arial, sans-serif",
-    border: "none",
-    borderRadius: "6px",
-    cursor: "pointer",
-    display: "flex",
-    alignItems: "center",
-    gap: "5px",
-    transition: "all 0.15s ease",
-    whiteSpace: "nowrap",
-  };
-  const activeStyle = {
-    ...baseBtnStyle,
-    backgroundColor: "#2563eb",
-    color: "#ffffff",
-    fontWeight: "600",
-    boxShadow: "0 1px 4px rgba(37,99,235,0.4)",
-  };
-  const inactiveStyle = {
-    ...baseBtnStyle,
-    backgroundColor: "transparent",
-    color: "#444",
-    fontWeight: "500",
-  };
-
   const modes = [
-    {
-      key: "marker",
-      label: "Marker",
-      title: "Click the map to find nearest facilities",
-      Icon: MapPin,
-    },
-    {
-      key: "barangay",
-      label: "Barangay",
-      title: "Click a barangay to view its details",
-      Icon: Hexagon,
-    },
+    { key: "marker", label: "Marker", Icon: MapPin },
+    { key: "barangay", label: "Barangay", Icon: Hexagon },
   ];
 
   return (
     <div
-      ref={containerRef}
       style={{
-        backgroundColor: "rgba(255,255,255,0.85)",
-        backdropFilter: "blur(10px)",
-        WebkitBackdropFilter: "blur(10px)",
-        borderRadius: "8px",
-        boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+        ...UNIFORM_CARD_STYLE,
         padding: "4px",
-        display: "flex",
-        gap: "4px",
-        border: "1px solid rgba(255,255,255,0.4)",
+        justifyContent: "space-between",
       }}
     >
-      {modes.map(({ key, label, title, Icon }) => {
+      {modes.map(({ key, label, Icon }) => {
         const active = mode === key;
         return (
           <button
             key={key}
             type="button"
             onClick={() => onModeChange(active ? "none" : key)}
-            style={active ? activeStyle : inactiveStyle}
-            title={active ? `${label} mode (click to turn off)` : title}
-            aria-label={active ? `${label} mode, click to turn off` : title}
-            aria-pressed={active}
+            style={{
+              flex: 1,
+              height: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "4px",
+              border: "none",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontSize: "11px",
+              fontWeight: active ? "600" : "500",
+              backgroundColor: active ? "#2563eb" : "transparent",
+              color: active ? "#fff" : "#444",
+              transition: "all 0.15s ease",
+            }}
+            title={
+              active ? `Turn off ${label} mode` : `Switch to ${label} mode`
+            }
           >
-            <Icon size={15} />
+            <Icon size={14} />
             {active && <span>{label}</span>}
           </button>
         );
@@ -2544,56 +2528,34 @@ function ZamboangaMask({
     if (tp) tp.style.zIndex = 660;
 
     const fetchBoundaries = async () => {
-      let cityData = APP_CACHE.cityBoundary;
-      if (!cityData) {
-        const res = await fetch("/zamboanga_city_boundary.geojson");
-        cityData = await res.json();
-        APP_CACHE.cityBoundary = cityData;
-      }
-
       let barangayData = APP_CACHE.barangays;
       if (!barangayData) {
         const res = await fetch("/zamboanga_city_barangays_shp.geojson");
         barangayData = await res.json();
         APP_CACHE.barangays = barangayData;
       }
-
       const popMap = await fetchBarangayPopulations();
       const maritime = await fetchZamboangaMaritimeBoundary();
-      return [cityData, barangayData, popMap, maritime];
+      return [barangayData, popMap, maritime];
     };
 
-    fetchBoundaries().then(([cityData, barangayData, popMap, maritime]) => {
+    fetchBoundaries().then(([barangayData, popMap, maritime]) => {
       if (cancelled) return;
-      const feature = cityData.features[0];
-      onBoundaryLoaded?.(feature);
-      const geom = feature.geometry;
-      const rings =
-        geom.type === "MultiPolygon"
-          ? geom.coordinates.map((poly) => poly[0])
-          : [geom.coordinates[0]];
 
-      const maskGeoJSON = {
+      // Build the "city boundary" from the barangay polygons, so the routing,
+      // search, and raster-clipping code that uses cityBoundary keeps working.
+      const polys = [];
+      barangayData.features.forEach((f) => {
+        const g = f.geometry;
+        if (!g) return;
+        if (g.type === "Polygon") polys.push(g.coordinates);
+        else if (g.type === "MultiPolygon") polys.push(...g.coordinates);
+      });
+      onBoundaryLoaded?.({
         type: "Feature",
-        geometry: {
-          type: "Polygon",
-          coordinates: [WORLD_RING.map(([lat, lng]) => [lng, lat]), ...rings],
-        },
-      };
-      maskLayerRef.current = L.geoJSON(maskGeoJSON, {
-        style: {
-          color: "transparent",
-          weight: 0,
-          fillColor: "#d9d9d9",
-          fillOpacity: 0.12,
-        },
-        interactive: false,
-      }).addTo(map);
-
-      borderLayerRef.current = L.geoJSON(cityData, {
-        style: { color: "#e8401c", weight: 2.5, opacity: 1, fill: false },
-        interactive: false,
-      }).addTo(map);
+        properties: {},
+        geometry: { type: "MultiPolygon", coordinates: polys },
+      });
 
       if (maritime?.features?.length)
         maritimeLayerRef.current = L.geoJSON(maritime, {
@@ -2612,8 +2574,6 @@ function ZamboangaMask({
 
     return () => {
       cancelled = true;
-      if (maskLayerRef.current) map.removeLayer(maskLayerRef.current);
-      if (borderLayerRef.current) map.removeLayer(borderLayerRef.current);
       if (barangayLayerRef.current) map.removeLayer(barangayLayerRef.current);
       if (maritimeLayerRef.current) map.removeLayer(maritimeLayerRef.current);
     };
@@ -2852,165 +2812,94 @@ function FacilityTypeControl({
 
   if (!facilityTypes || facilityTypes.length === 0) return null;
 
-  const glass = {
-    backgroundColor: "rgba(255,255,255,0.88)",
-    backdropFilter: "blur(10px)",
-    WebkitBackdropFilter: "blur(10px)",
-    borderRadius: "10px",
-    boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
-    border: "1px solid rgba(255,255,255,0.4)",
-    fontFamily: "Arial, sans-serif",
-  };
-
-  const chip = (active) => ({
-    padding: "5px 9px",
-    fontSize: "11px",
-    fontWeight: active ? 600 : 500,
-    border: "none",
-    borderRadius: "999px",
-    cursor: "pointer",
-    whiteSpace: "nowrap",
-    flexShrink: 0,
-    backgroundColor: active ? "#2563eb" : "rgba(0,0,0,0.05)",
-    color: active ? "#fff" : "#333",
-    boxShadow: active ? "0 1px 4px rgba(37,99,235,0.4)" : "none",
-    transition: "all 0.15s ease",
-  });
-
-  const eyeBtn = (
-    <button
-      type="button"
-      onClick={onToggleFacilitiesVisibility}
-      title={
-        facilitiesVisible
-          ? "Hide facilities on the map"
-          : "Show facilities on the map"
-      }
-      aria-label={facilitiesVisible ? "Hide facilities" : "Show facilities"}
-      style={{
-        width: 28,
-        height: 28,
-        flexShrink: 0,
-        border: "none",
-        borderRadius: "50%",
-        background: "transparent",
-        cursor: "pointer",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        color: facilitiesVisible ? "#333" : "#999",
-      }}
-    >
-      {facilitiesVisible ? <Eye size={16} /> : <EyeOff size={16} />}
-    </button>
-  );
-
   return (
     <div ref={ref}>
       {!open ? (
         <button
           type="button"
           onClick={() => setOpenOverlay("facility")}
-          aria-label="Open facility filter"
-          title="Facility filter"
-          style={{
-            ...glass,
-            padding: "7px 10px",
-            display: "flex",
-            alignItems: "center",
-            gap: "6px",
-            fontSize: "11px",
-            fontWeight: 600,
-            color: "#333",
-            cursor: "pointer",
-          }}
+          style={{ ...UNIFORM_CARD_STYLE, justifyContent: "space-between" }}
         >
-          <SlidersHorizontal size={14} />
-          <span>
-            {selectedTypes.length === 0
-              ? "All facilities"
-              : `${selectedTypes.length} selected`}
-          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <SlidersHorizontal size={14} />
+            <span>
+              {selectedTypes.length === 0
+                ? "All facilities"
+                : `${selectedTypes.length} selected`}
+            </span>
+          </div>
           {!facilitiesVisible && <EyeOff size={13} color="#999" />}
         </button>
       ) : (
         <div
-          className="overlay-animate-in"
           style={{
-            ...glass,
+            ...UNIFORM_CARD_STYLE,
+            height: "auto",
+            width: "160px",
+            flexDirection: "column",
+            alignItems: "stretch",
             padding: "8px",
-            minWidth: "150px",
-            maxWidth: compact ? "calc(100vw - 24px - 176px - 8px)" : "340px",
-            transformOrigin: "top left",
+            gap: "6px",
           }}
         >
           <div
             style={{
               display: "flex",
-              alignItems: "center",
               justifyContent: "space-between",
-              marginBottom: "6px",
+              alignItems: "center",
             }}
           >
             <span
-              style={{
-                fontSize: "10px",
-                fontWeight: 700,
-                letterSpacing: 0.5,
-                textTransform: "uppercase",
-                color: "#70757a",
-              }}
+              style={{ fontSize: "10px", fontWeight: 700, color: "#70757a" }}
             >
-              Facility type
+              FACILITY TYPE
             </span>
-            <div style={{ display: "flex", alignItems: "center" }}>
-              {eyeBtn}
+            <div style={{ display: "flex", gap: "4px" }}>
               <button
-                type="button"
-                onClick={() => setOpenOverlay(null)}
-                aria-label="Collapse facility filter"
-                title="Collapse"
+                onClick={onToggleFacilitiesVisibility}
                 style={{
-                  width: 28,
-                  height: 28,
                   border: "none",
                   background: "transparent",
                   cursor: "pointer",
+                  padding: 0,
+                }}
+              >
+                {facilitiesVisible ? (
+                  <Eye size={14} />
+                ) : (
+                  <EyeOff size={14} color="#999" />
+                )}
+              </button>
+              <button
+                onClick={() => setOpenOverlay(null)}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  padding: 0,
                   color: "#666",
-                  fontSize: 13,
                 }}
               >
                 ✕
               </button>
             </div>
           </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "5px" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
             <button
-              type="button"
               onClick={onSelectAllTypes}
-              style={chip(selectedTypes.length === 0)}
-              title="Show all health facilities and evacuation centers"
+              style={chipStyle(selectedTypes.length === 0)}
             >
               All
             </button>
-            {facilityTypes.map((type) => {
-              const active = selectedTypes.includes(type);
-              return (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => onToggleType(type)}
-                  style={chip(active)}
-                  title={
-                    active
-                      ? `Remove ${type} from filter`
-                      : `Add ${type} to filter`
-                  }
-                >
-                  {type}
-                </button>
-              );
-            })}
+            {facilityTypes.map((type) => (
+              <button
+                key={type}
+                onClick={() => onToggleType(type)}
+                style={chipStyle(selectedTypes.includes(type))}
+              >
+                {type}
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -3018,38 +2907,41 @@ function FacilityTypeControl({
   );
 }
 
+const chipStyle = (active) => ({
+  padding: "3px 6px",
+  fontSize: "10px",
+  fontWeight: active ? 600 : 500,
+  border: "none",
+  borderRadius: "4px",
+  cursor: "pointer",
+  backgroundColor: active ? "#2563eb" : "rgba(0,0,0,0.05)",
+  color: active ? "#fff" : "#333",
+});
+
 function SimulationControl({ onApply, currentOverride, compact }) {
   const [isOpen, setIsOpen] = useState(false);
-
   const rawFeatures = [
-    {
-      key: "chirps",
-      label: "CHIRPS Rainfall (mm)",
-      min: -100,
-      max: 300,
-      step: 10,
-    },
-    { key: "gpm", label: "GPM Rainfall (mm)", min: -100, max: 300, step: 10 },
+    { key: "chirps", label: "CHIRPS (mm)", min: -100, max: 300, step: 10 },
+    { key: "gpm", label: "GPM (mm)", min: -100, max: 300, step: 10 },
     { key: "dem", label: "Elevation (m)", min: -5, max: 5, step: 0.5 },
     { key: "hand", label: "HAND (m)", min: -5, max: 5, step: 0.5 },
     { key: "slope", label: "Slope (°)", min: -5, max: 5, step: 0.5 },
-    { key: "twi", label: "Wetness Index (TWI)", min: -5, max: 5, step: 0.5 },
+    { key: "twi", label: "TWI", min: -5, max: 5, step: 0.5 },
     {
       key: "flow_accumulation",
-      label: "Flow Accumulation",
+      label: "Flow Acc.",
       min: -1000,
       max: 3000,
       step: 100,
     },
     {
       key: "distance_to_river",
-      label: "Dist. to River (m)",
+      label: "Dist. River (m)",
       min: -100,
       max: 100,
       step: 10,
     },
   ];
-
   const [values, setValues] = useState(() => {
     const initial = {};
     rawFeatures.forEach((f) => {
@@ -3090,50 +2982,40 @@ function SimulationControl({ onApply, currentOverride, compact }) {
         <button
           onClick={() => setIsOpen(true)}
           style={{
-            background: "rgba(255,255,255,0.95)",
-            padding: "8px 12px",
-            borderRadius: 8,
-            boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+            ...UNIFORM_CARD_STYLE,
             border: hasActiveOverrides
               ? "2px solid #2563eb"
               : "1px solid rgba(255,255,255,0.4)",
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            cursor: "pointer",
-            fontFamily: "Arial",
-            fontSize: 12,
-            fontWeight: "bold",
             color: hasActiveOverrides ? "#2563eb" : "#333",
+            gap: "6px",
           }}
         >
-          <SlidersHorizontal size={16} />
+          <SlidersHorizontal size={14} />
           {hasActiveOverrides ? "Simulation Active" : "Simulate"}
         </button>
       ) : (
         <div
           style={{
-            background: "rgba(255,255,255,0.95)",
-            padding: 12,
-            borderRadius: 8,
-            boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
-            width: 260,
-            fontFamily: "Arial",
+            ...UNIFORM_CARD_STYLE,
+            height: "auto",
+            width: "200px",
+            flexDirection: "column",
+            alignItems: "stretch",
+            padding: "12px",
+            gap: "8px",
             maxHeight: "60vh",
             overflowY: "auto",
-            border: "1px solid #e2e8f0",
           }}
         >
           <div
             style={{
               display: "flex",
               justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: 10,
+              marginBottom: "4px",
             }}
           >
             <h4 style={{ margin: 0, fontSize: 12, fontWeight: "bold" }}>
-              Adjust Raw Features
+              Simulate
             </h4>
             <div style={{ display: "flex", gap: 6 }}>
               <button
@@ -3153,61 +3035,53 @@ function SimulationControl({ onApply, currentOverride, compact }) {
                 onClick={() => setIsOpen(false)}
                 style={{
                   fontSize: 12,
-                  padding: "2px 6px",
+                  padding: 0,
                   cursor: "pointer",
                   background: "transparent",
                   border: "none",
                   color: "#666",
-                  fontWeight: "bold",
                 }}
               >
                 ✕
               </button>
             </div>
           </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {rawFeatures.map((f) => (
-              <div key={f.key}>
-                <div
+          {rawFeatures.map((f) => (
+            <div key={f.key}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: 10,
+                  color: "#475569",
+                }}
+              >
+                <span>{f.label}</span>
+                <span
                   style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    fontSize: 10,
-                    marginBottom: 2,
-                    color: "#475569",
+                    fontWeight: "bold",
+                    color: values[f.key] !== 0 ? "#2563eb" : "#94a3b8",
                   }}
                 >
-                  <span>{f.label}</span>
-                  <span
-                    style={{
-                      fontWeight: "bold",
-                      color: values[f.key] !== 0 ? "#2563eb" : "#94a3b8",
-                    }}
-                  >
-                    {values[f.key] > 0 ? "+" : ""}
-                    {values[f.key]}
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min={f.min}
-                  max={f.max}
-                  step={f.step}
-                  value={values[f.key]}
-                  onChange={(e) =>
-                    setValues((v) => ({
-                      ...v,
-                      [f.key]: Number(e.target.value),
-                    }))
-                  }
-                  onPointerUp={() => commit(values)}
-                  onKeyUp={() => commit(values)}
-                  style={{ width: "100%", cursor: "pointer" }}
-                />
+                  {values[f.key] > 0 ? "+" : ""}
+                  {values[f.key]}
+                </span>
               </div>
-            ))}
-          </div>
+              <input
+                type="range"
+                min={f.min}
+                max={f.max}
+                step={f.step}
+                value={values[f.key]}
+                onChange={(e) =>
+                  setValues((v) => ({ ...v, [f.key]: Number(e.target.value) }))
+                }
+                onPointerUp={() => commit(values)}
+                onKeyUp={() => commit(values)}
+                style={{ width: "100%", cursor: "pointer" }}
+              />
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -5414,6 +5288,9 @@ function FloodMap() {
   const isLoadingBarangays =
     mapMode === "barangay" && (!barangayData || fsiStatus !== null);
 
+  const sidebarOpenNow = isDesktop ? sidebarOpen : drawerOpen;
+  const showPeek = !isDesktop && !drawerOpen;
+
   const sidebarContent = (
     <div className="space-y-6">
       <div className="pb-4 border-b border-slate-200 flex justify-between items-start gap-4">
@@ -5426,14 +5303,32 @@ function FloodMap() {
             Spatial Machine Learning
           </p>
         </div>
-        <Button
-          onClick={() => navigate("/login")}
-          size="sm"
-          className="bg-blue-600 hover:bg-blue-700 text-white flex-shrink-0 flex items-center gap-2"
-        >
-          <LogIn size={14} />
-          Login
-        </Button>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <Button
+            onClick={() => navigate("/login")}
+            size="sm"
+            className="bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-2"
+          >
+            <LogIn size={14} />
+            Login
+          </Button>
+          {/* Sidebar close toggle now lives INSIDE the sidebar (desktop) */}
+          {isDesktop && (
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              onClick={handleToggleSidebar}
+              aria-label="Close sidebar"
+              aria-expanded={sidebarOpen}
+              aria-controls="flood-map-sidebar"
+              title="Close sidebar"
+              className="h-8 w-8"
+            >
+              <PanelRightClose className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
       </div>
 
       <FacilityDetailsPanel
@@ -5453,9 +5348,6 @@ function FloodMap() {
     </div>
   );
 
-  const sidebarOpenNow = isDesktop ? sidebarOpen : drawerOpen;
-  const showPeek = !isDesktop && !drawerOpen;
-
   return (
     <div className="flex w-full h-screen supports-[height:100dvh]:h-dvh overflow-hidden">
       <div
@@ -5466,7 +5358,6 @@ function FloodMap() {
           showPeek && "has-peek",
         )}
       >
-        {/* ... existing styles ... */}
         <style>{`
           .barangay-label { background: rgba(0,0,0,0.75); border: none; border-radius: 4px; color: #ffffff; font-size: 11px; font-weight: 500; padding: 3px 7px; white-space: nowrap; }
           .barangay-label::before { display: none; }
@@ -5613,23 +5504,21 @@ function FloodMap() {
           />
         </MapContainer>
 
-        {isDesktop && (
+        {/* Only shown when the sidebar is CLOSED, so it can be reopened.
+            While open, the toggle is inside the sidebar header. */}
+        {isDesktop && !sidebarOpen && (
           <Button
             type="button"
             variant="secondary"
             size="icon"
             onClick={handleToggleSidebar}
-            aria-label={sidebarOpenNow ? "Close sidebar" : "Open sidebar"}
-            aria-expanded={sidebarOpenNow}
+            aria-label="Open sidebar"
+            aria-expanded={false}
             aria-controls="flood-map-sidebar"
-            title={sidebarOpenNow ? "Close sidebar" : "Open sidebar"}
+            title="Open sidebar"
             className="absolute top-2 right-4 z-[2000] h-10 w-10 shadow-md bg-white/85 backdrop-blur hover:bg-white"
           >
-            {sidebarOpen ? (
-              <PanelRightClose className="h-5 w-5" />
-            ) : (
-              <PanelRightOpen className="h-5 w-5" />
-            )}
+            <PanelRightOpen className="h-5 w-5" />
           </Button>
         )}
         {showPeek && (
@@ -5687,14 +5576,6 @@ function FloodMap() {
           </div>
 
           <div style={{ pointerEvents: "auto" }}>
-            <MapModeControl
-              mode={mapMode}
-              onModeChange={handleModeChange}
-              compact={compact}
-            />
-          </div>
-
-          <div style={{ pointerEvents: "auto" }}>
             <FacilityTypeControl
               facilityTypes={facilityTypes}
               selectedTypes={selectedTypes}
@@ -5712,6 +5593,14 @@ function FloodMap() {
             <SimulationControl
               onApply={handleApplySimulation}
               currentOverride={simulationOverride}
+              compact={compact}
+            />
+          </div>
+
+          <div style={{ pointerEvents: "auto" }}>
+            <MapModeControl
+              mode={mapMode}
+              onModeChange={handleModeChange}
               compact={compact}
             />
           </div>
@@ -5776,17 +5665,37 @@ function FloodMap() {
             <div className="pt-2 pb-1 flex justify-center">
               <div className="h-1.5 w-12 rounded-full bg-muted-foreground/30" />
             </div>
-            <SheetHeader className="border-b px-4 pb-3 pt-1 text-left">
-              <SheetTitle>
-                {mapMode === "barangay"
-                  ? "Barangay Details"
-                  : "Nearby Facilities"}
-              </SheetTitle>
-              <SheetDescription>
-                {mapMode === "barangay"
-                  ? "Flood susceptibility and population."
-                  : "Find the nearest health facilities and evacuation centers."}
-              </SheetDescription>
+            <SheetHeader
+              style={{
+                padding: "16px",
+                display: "flex",
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+              }}
+            >
+              <div>
+                <SheetTitle>ABENIDA</SheetTitle>
+                <SheetDescription
+                  style={{
+                    marginTop: "8px",
+                    fontSize: "13px",
+                    lineHeight: "1.4",
+                  }}
+                >
+                  Mapping High-Resolution Flood Susceptibility in Zamboanga City
+                  Using Spatial Machine Learning
+                </SheetDescription>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setDrawerOpen(false)}
+                aria-label="Close drawer"
+                style={{ marginTop: "-4px", marginRight: "-8px" }}
+              >
+                <PanelRightClose size={18} />
+              </Button>
             </SheetHeader>
             <div className="flex-1 overflow-y-auto p-4">{sidebarContent}</div>
           </SheetContent>
