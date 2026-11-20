@@ -712,11 +712,11 @@ async function fetchZamboangaMaritimeBoundary() {
 
   try {
     const query = `
-      [out:json][timeout:25];
-      relation["type"="boundary"]["boundary"="administrative"]["admin_level"="6"]["name"="Zamboanga City"]->.city;
-      way(r.city);
-      out tags geom;
-    `;
+        [out:json][timeout:25];
+        relation["type"="boundary"]["boundary"="administrative"]["admin_level"="6"]["name"="Zamboanga City"]->.city;
+        way(r.city);
+        out tags geom;
+      `;
 
     // Call the Vercel serverless proxy instead of Overpass directly
     const res = await fetch(`/api/overpass?data=${encodeURIComponent(query)}`);
@@ -842,6 +842,7 @@ async function fetchServerFsiBatch(
   model = DEFAULT_FSI_MODEL,
   event = "overall",
   simulationOverride = null,
+  signal = undefined,
 ) {
   const body = { model, event, explain: false, points };
   if (simulationOverride) body.simulation_override = simulationOverride;
@@ -850,6 +851,7 @@ async function fetchServerFsiBatch(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok) throw new Error(`Batch failed: HTTP ${res.status}`);
   return res.json();
@@ -943,6 +945,64 @@ async function resolveBarangayFsi(
   }
   APP_CACHE.fsi[cacheKey] = result;
   return result;
+}
+
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (i < items.length) {
+        const idx = i++;
+        out[idx] = await fn(items[idx], idx);
+      }
+    }),
+  );
+  return out;
+}
+
+// Ray-casting on raw coords (GeoJSON ring: [lng, lat])
+function pointInRing(x, y, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0],
+      yi = ring[i][1];
+    const xj = ring[j][0],
+      yj = ring[j][1];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi)
+      inside = !inside;
+  }
+  return inside;
+}
+
+// Handles Polygon + MultiPolygon, with holes
+function buildPolygonTester(feature) {
+  const g = feature.geometry;
+  const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
+  const prepared = polys.map((poly) => {
+    const outer = poly[0];
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    for (const [x, y] of outer) {
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    return { outer, holes: poly.slice(1), minX, minY, maxX, maxY };
+  });
+
+  return (x, y) => {
+    for (const p of prepared) {
+      if (x < p.minX || x > p.maxX || y < p.minY || y > p.maxY) continue;
+      if (!pointInRing(x, y, p.outer)) continue;
+      if (p.holes.some((h) => pointInRing(x, y, h))) continue;
+      return true;
+    }
+    return false;
+  };
 }
 
 function useBarangayExplanation(barangay, model, event) {
@@ -1118,11 +1178,11 @@ function LegendControl({
         )
         .join("");
       div.innerHTML = `
-        <div style="display:flex;align-items:center;gap:6px;opacity:${fsiVisible ? 1 : 0.5};">
-          <span style="display:flex;gap:3px;">${dots}</span>
-          <strong style="font-size:11px;">FSI</strong>
-          <span style="font-size:9px;color:#777;">▾</span>
-        </div>`;
+          <div style="display:flex;align-items:center;gap:6px;opacity:${fsiVisible ? 1 : 0.5};">
+            <span style="display:flex;gap:3px;">${dots}</span>
+            <strong style="font-size:11px;">FSI</strong>
+            <span style="font-size:9px;color:#777;">▾</span>
+          </div>`;
       div.onclick = (e) => {
         L.DomEvent.stop(e);
         setLegendOpen(true);
@@ -1266,12 +1326,12 @@ function MapControls({
         const b = document.createElement("button");
         b.innerHTML = `<svg viewBox="0 0 24 24" width="${iconSize}" height="${iconSize}" style="pointer-events:none;">${svg}</svg>`;
         b.style.cssText = `
-          background: none; border: none; padding: ${compact ? "7px 8px" : "8px 10px"};
-          display: flex; align-items: center; justify-content: center;
-          transition: background 0.2s; width: 100%; cursor: pointer;
-          border-bottom: 1px solid #e0e0e0;
-          ${disabled ? "opacity: 0.4; pointer-events: none;" : ""}
-        `;
+            background: none; border: none; padding: ${compact ? "7px 8px" : "8px 10px"};
+            display: flex; align-items: center; justify-content: center;
+            transition: background 0.2s; width: 100%; cursor: pointer;
+            border-bottom: 1px solid #e0e0e0;
+            ${disabled ? "opacity: 0.4; pointer-events: none;" : ""}
+          `;
         b.title = title;
         b.addEventListener("mouseenter", () => {
           if (!disabled) b.style.backgroundColor = "#f0f0f0";
@@ -2424,7 +2484,7 @@ function ZamboangaMask({
   selectedBarangayName,
   fsiModel,
   selectedEvent,
-  simulationOverride, // <-- NEW
+  simulationOverride,
   onFsiStatusChange,
 }) {
   const map = useMap();
@@ -2493,7 +2553,7 @@ function ZamboangaMask({
 
       let barangayData = APP_CACHE.barangays;
       if (!barangayData) {
-        const res = await fetch("/zamboanga_city_barangays.geojson");
+        const res = await fetch("/zamboanga_city_barangays_shp.geojson");
         barangayData = await res.json();
         APP_CACHE.barangays = barangayData;
       }
@@ -2581,7 +2641,7 @@ function ZamboangaMask({
           barangayData.features,
           fsiModel,
           selectedEvent,
-          simulationOverride, // <-- NEW
+          simulationOverride,
         );
         if (cancelled) return;
 
@@ -2712,7 +2772,7 @@ function ZamboangaMask({
     return () => {
       cancelled = true;
     };
-  }, [map, fsiModel, selectedEvent, simulationOverride]); // <-- Added simulationOverride
+  }, [map, fsiModel, selectedEvent, simulationOverride]);
 
   useEffect(() => {
     const layer = barangayLayerRef.current;
@@ -2998,16 +3058,12 @@ function SimulationControl({ onApply, currentOverride, compact }) {
     return initial;
   });
 
-  const handleChange = (key, val) => {
-    const newValues = { ...values, [key]: Number(val) };
-    setValues(newValues);
-
-    const activeOverrides = {};
-    Object.keys(newValues).forEach((k) => {
-      if (newValues[k] !== 0) activeOverrides[k] = newValues[k];
+  const commit = (vals) => {
+    const active = {};
+    Object.keys(vals).forEach((k) => {
+      if (vals[k] !== 0) active[k] = vals[k];
     });
-
-    onApply(Object.keys(activeOverrides).length > 0 ? activeOverrides : null);
+    onApply(Object.keys(active).length ? active : null);
   };
 
   const handleReset = () => {
@@ -3139,7 +3195,14 @@ function SimulationControl({ onApply, currentOverride, compact }) {
                   max={f.max}
                   step={f.step}
                   value={values[f.key]}
-                  onChange={(e) => handleChange(f.key, e.target.value)}
+                  onChange={(e) =>
+                    setValues((v) => ({
+                      ...v,
+                      [f.key]: Number(e.target.value),
+                    }))
+                  }
+                  onPointerUp={() => commit(values)}
+                  onKeyUp={() => commit(values)}
                   style={{ width: "100%", cursor: "pointer" }}
                 />
               </div>
@@ -3637,23 +3700,23 @@ function QGISHoverTooltip({ rasterDataRef }) {
     const container = map.getContainer();
     const tooltipEl = document.createElement("div");
     tooltipEl.style.cssText = `
-      position: absolute;
-      left: 0;
-      top: 0;
-      z-index: 9999;
-      pointer-events: none;
-      background: rgba(0, 0, 0, 0.85);
-      color: #fff;
-      font-size: 11px;
-      font-family: Arial, sans-serif;
-      padding: 6px 10px;
-      border-radius: 4px;
-      line-height: 1.5;
-      display: none;
-      white-space: nowrap;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
-      will-change: transform;
-    `;
+        position: absolute;
+        left: 0;
+        top: 0;
+        z-index: 9999;
+        pointer-events: none;
+        background: rgba(0, 0, 0, 0.85);
+        color: #fff;
+        font-size: 11px;
+        font-family: Arial, sans-serif;
+        padding: 6px 10px;
+        border-radius: 4px;
+        line-height: 1.5;
+        display: none;
+        white-space: nowrap;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+        will-change: transform;
+      `;
     container.appendChild(tooltipEl);
 
     const fmt = (v) => {
@@ -4863,8 +4926,8 @@ function FsiLoadingIndicator({ status, visible = true, compact = false }) {
           flexDirection: "column",
           alignItems: "center",
           gap: "12px",
-          width: compact ? "220px" : "260px", // Fixed width
-          boxSizing: "border-box", // Prevents padding from expanding the width
+          width: compact ? "220px" : "260px",
+          boxSizing: "border-box",
           padding: compact ? "16px 20px" : "20px 28px",
           backgroundColor: "rgba(255,255,255,0.97)",
           borderRadius: "14px",
@@ -4874,14 +4937,14 @@ function FsiLoadingIndicator({ status, visible = true, compact = false }) {
         }}
       >
         <style>{`
-          @keyframes fsi-rise {
-            0%, 100% { transform: translateY(0); opacity: .35; }
-            50%      { transform: translateY(-8px); opacity: 1; }
-          }
-          @media (prefers-reduced-motion: reduce) {
-            .fsi-bar { animation: none !important; opacity: 1 !important; }
-          }
-        `}</style>
+            @keyframes fsi-rise {
+              0%, 100% { transform: translateY(0); opacity: .35; }
+              50%      { transform: translateY(-8px); opacity: 1; }
+            }
+            @media (prefers-reduced-motion: reduce) {
+              .fsi-bar { animation: none !important; opacity: 1 !important; }
+            }
+          `}</style>
 
         {/* Four bars rising in sequence, one per risk level */}
         <div
@@ -5203,6 +5266,7 @@ function FloodMap() {
       return n;
     });
   }, []);
+
   const handleRasterLoaded = useCallback((key, data) => {
     if (data) {
       qgisRasterDataRef.current[key] = data;
@@ -5402,6 +5466,7 @@ function FloodMap() {
           showPeek && "has-peek",
         )}
       >
+        {/* ... existing styles ... */}
         <style>{`
           .barangay-label { background: rgba(0,0,0,0.75); border: none; border-radius: 4px; color: #ffffff; font-size: 11px; font-weight: 500; padding: 3px 7px; white-space: nowrap; }
           .barangay-label::before { display: none; }
@@ -5447,6 +5512,7 @@ function FloodMap() {
             font-family: var(--font-display);
           }
         `}</style>
+
         <MapContainer
           center={position}
           zoom={10}
