@@ -6,7 +6,7 @@ import { createPortal } from "react-dom";
 import BaseLayerSwitcher, { BASE_LAYERS } from "./BaseLayerSwitcher";
 import { supabase } from "../lib/supabaseClient";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
-import FsiModeControl from "./fsimodecontrol";
+import FsiModeControl from "./FsiModeControl";
 
 // Leaflet & MarkerCluster (Imported exactly once)
 import L from "leaflet";
