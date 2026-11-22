@@ -5372,7 +5372,9 @@ function FloodMap() {
       .then((res) => res.json())
       .then((data) => {
         if (data.events && Array.isArray(data.events)) {
-          const evs = data.events.map((e) => e.event);
+          const evs = data.events
+            .map((e) => e.event)
+            .filter((e) => !e.startsWith("holdout_"));
           if (!evs.includes("overall")) evs.unshift("overall");
           setAvailableEvents(evs);
         }
