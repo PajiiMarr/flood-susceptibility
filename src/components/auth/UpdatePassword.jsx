@@ -39,22 +39,43 @@ export default function UpdatePassword() {
   const [isValidSession, setIsValidSession] = useState(false);
 
   useEffect(() => {
+    let mounted = true;
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return;
+
+      if (event === "PASSWORD_RECOVERY" && session) {
+        setIsValidSession(true);
+        setErrorMsg("");
+      }
+    });
+
     const checkSession = async () => {
       const {
         data: { session },
+        error,
       } = await supabase.auth.getSession();
+
+      if (!mounted) return;
 
       if (session) {
         setIsValidSession(true);
       } else {
-        // Reset the session if the link is invalid/expired to clean up any state
-        await supabase.auth.signOut();
         setErrorMsg(
-          "Invalid or expired password reset link. Please request a new one.",
+          error?.message ||
+            "Invalid or expired password reset link. Please request a new one.",
         );
       }
     };
+
     checkSession();
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   const handleSubmit = async (e) => {
