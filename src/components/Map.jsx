@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 import BaseLayerSwitcher, { BASE_LAYERS } from "./BaseLayerSwitcher";
 import { supabase } from "../lib/supabaseClient";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
+import FsiModeControl from "./fsimodecontrol";
 
 // Leaflet & MarkerCluster (Imported exactly once)
 import L from "leaflet";
@@ -59,6 +60,7 @@ import {
   Home,
   LogIn,
   CalendarDays,
+  Crosshair,
 } from "lucide-react";
 
 import {
@@ -421,6 +423,142 @@ const POPULATION_XLSX_URL =
   "https://xflhynxdadwlrloxiogv.supabase.co/storage/v1/object/public/fsi-bucket/SOCIO%20DEMOGRAPHIC%20DATAS/Region-IX_0.xlsx";
 
 const BLOB_SAS_URL = import.meta.env.VITE_BLOB_SAS_URL || "";
+
+const FSI_MAP_OPTIONS = {
+  fsi: {
+    key: "fsi",
+    name: "Flood Susceptibility Index",
+    previewColor: "#d73027",
+    description: "Combined flood susceptibility",
+  },
+  susceptibility: {
+    key: "susceptibility",
+    name: "Susceptibility Map",
+    previewColor: "#fc8d59",
+    description: "Event-specific susceptibility",
+  },
+};
+
+function FsiMapLayer({
+  mode,
+  fsiVisible,
+  cityBoundary,
+  barangayData,
+  fsiModel,
+  selectedEvent,
+  onFsiStatusChange,
+}) {
+  const map = useMap();
+  const layerRef = useRef(null);
+
+  useEffect(() => {
+    if (!map) return;
+    if (!map.getPane("fsi-pane")) {
+      const pane = map.createPane("fsi-pane");
+      pane.style.zIndex = 640;
+    }
+  }, [map]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const build = async () => {
+      // Clear layer when mode is off, FSI hidden, or no boundary data yet.
+      if (mode === "none" || !fsiVisible || !barangayData) {
+        if (layerRef.current) {
+          map.removeLayer(layerRef.current);
+          layerRef.current = null;
+        }
+        return;
+      }
+
+      onFsiStatusChange?.("predicting");
+
+      try {
+        // Susceptibility uses the event; FSI uses the baseline "overall".
+        const event = mode === "susceptibility" ? selectedEvent : "overall";
+
+        // Force a real API call in susceptibility mode by invalidating the
+        // shared cache entry that ZamboangaMask populated for the same
+        // event+model. Otherwise we'd silently reuse the baseline result
+        // and no /api/predict/batch request would fire when the user
+        // switches modes or events.
+        if (mode === "susceptibility") {
+          const cacheKey = `${event}_${fsiModel}`;
+          if (APP_CACHE.fsi[cacheKey]) delete APP_CACHE.fsi[cacheKey];
+        }
+
+        const fsiMap = await resolveBarangayFsi(
+          barangayData.features,
+          fsiModel,
+          event,
+        );
+        if (cancelled) return;
+
+        const features = barangayData.features.map((f) => {
+          const name = f.properties?.adm4_name || "";
+          const fsi = fsiMap.get(name) || {};
+          return {
+            ...f,
+            properties: {
+              ...f.properties,
+              fsi_risk: fsi.risk || "Low Risk",
+              fsi_probability: fsi.probability ?? null,
+            },
+          };
+        });
+
+        if (layerRef.current) map.removeLayer(layerRef.current);
+
+        const layer = L.geoJSON(
+          { ...barangayData, features },
+          {
+            pane: "fsi-pane",
+            style: (feat) => {
+              const risk = feat?.properties?.fsi_risk || "Low Risk";
+              return {
+                color: "#ffffff",
+                weight: 1,
+                opacity: FSI_OPACITY.borderOpacity,
+                fillColor: RISK_LEVELS[risk] || RISK_LEVELS["Low Risk"],
+                fillOpacity: FSI_OPACITY.normal,
+              };
+            },
+            interactive: false,
+          },
+        ).addTo(map);
+
+        layerRef.current = layer;
+      } finally {
+        if (!cancelled) onFsiStatusChange?.(null);
+      }
+    };
+
+    build();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    map,
+    mode,
+    fsiVisible,
+    barangayData,
+    fsiModel,
+    selectedEvent,
+    onFsiStatusChange,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      if (layerRef.current && map) {
+        map.removeLayer(layerRef.current);
+        layerRef.current = null;
+      }
+    };
+  }, [map]);
+
+  return null;
+}
 
 function buildAzurePath(relativePath) {
   if (!BLOB_SAS_URL) {
@@ -1086,6 +1224,12 @@ function CustomPanes() {
       routes.style.zIndex = 645;
       routes.style.pointerEvents = "none";
     }
+
+    if (!map.getPane("raster-pane")) {
+      const rp = map.createPane("raster-pane");
+      rp.style.zIndex = 642; // above fsi-pane (640), below routes (645)
+      rp.style.pointerEvents = "none";
+    }
     if (!map.getPane("facilities-pane")) {
       const pane = map.createPane("facilities-pane");
       pane.style.zIndex = 650;
@@ -1447,8 +1591,8 @@ function MapModeControl({ mode, onModeChange, compact = false }) {
   const modes = [
     { key: "marker", label: "Marker", Icon: MapPin },
     { key: "barangay", label: "Barangay", Icon: Hexagon },
+    { key: "pixel", label: "Pixel", Icon: Crosshair },
   ];
-
   return (
     <div
       style={{
@@ -2144,6 +2288,7 @@ function RoutingLayer({
   onLocationChange,
   mapMode,
   onBarangaySelect,
+  onPixelSelect,
   onMapClick, // NEW
 }) {
   const map = useMap();
@@ -2153,6 +2298,7 @@ function RoutingLayer({
   const [errorMsg, setErrorMsg] = useState(null);
   const [outsideBoundary, setOutsideBoundary] = useState(false);
   const layerRef = useRef(null);
+  const onPixelSelectRef = useRef(onPixelSelect);
 
   const originBarangay = useMemo(
     () => (origin ? findBarangayForPoint(origin, barangayData) : null),
@@ -2175,6 +2321,10 @@ function RoutingLayer({
   useEffect(() => {
     onMapClickRef.current = onMapClick;
   }, [onMapClick]);
+
+  useEffect(() => {
+    onPixelSelectRef.current = onPixelSelect;
+  }, [onPixelSelect]);
 
   useEffect(() => {
     onSelectionChange?.({
@@ -2306,16 +2456,18 @@ function RoutingLayer({
 
   useMapEvents({
     click(e) {
-      if (onMapClickRef.current) onMapClickRef.current(); // Clear selection
-
+      if (onMapClickRef.current) onMapClickRef.current();
       const m = mapModeRef.current;
       if (m === "barangay") {
         const b = findBarangayForPoint(e.latlng, barangayDataRef.current);
         if (b) onBarangaySelectRef.current?.(b);
         return;
       }
+      if (m === "pixel") {
+        if (isInsideBoundary(e.latlng)) onPixelSelectRef.current?.(e.latlng);
+        return;
+      }
       if (m === "marker") handleNewOrigin(e.latlng);
-      // m === "none": map clicks do nothing
     },
   });
 
@@ -2468,7 +2620,6 @@ function ZamboangaMask({
   selectedBarangayName,
   fsiModel,
   selectedEvent,
-  simulationOverride,
   onFsiStatusChange,
 }) {
   const map = useMap();
@@ -2499,7 +2650,7 @@ function ZamboangaMask({
 
   const getBaseFill = () => {
     if (!fsiVisibleRef.current) return 0;
-    return rasterActiveRef.current ? 0.12 : FSI_OPACITY.normal;
+    return rasterActiveRef.current ? 0 : FSI_OPACITY.normal;
   };
   const getBaseBorder = () =>
     fsiVisibleRef.current ? FSI_OPACITY.borderOpacity : 0;
@@ -2596,12 +2747,11 @@ function ZamboangaMask({
         const barangayData = barangayDataRef.current;
         const popMap = popMapRef.current;
 
-        // Pass the override to the resolver
+        // Barangay layer always shows the baseline model (no simulation here)
         const fsiMap = await resolveBarangayFsi(
           barangayData.features,
           fsiModel,
           selectedEvent,
-          simulationOverride,
         );
         if (cancelled) return;
 
@@ -2732,7 +2882,7 @@ function ZamboangaMask({
     return () => {
       cancelled = true;
     };
-  }, [map, fsiModel, selectedEvent, simulationOverride]);
+  }, [map, fsiModel, selectedEvent]);
 
   useEffect(() => {
     const layer = barangayLayerRef.current;
@@ -2918,7 +3068,14 @@ const chipStyle = (active) => ({
   color: active ? "#fff" : "#333",
 });
 
-function SimulationControl({ onApply, currentOverride, compact }) {
+function SimulationControl({
+  onApply,
+  currentOverride,
+  pixel,
+  onRequestPixel,
+  compact,
+  disabled = false, // NEW: true while the full raster is displayed
+}) {
   const [isOpen, setIsOpen] = useState(false);
   const rawFeatures = [
     { key: "chirps", label: "CHIRPS (mm)", min: -100, max: 300, step: 10 },
@@ -2950,7 +3107,18 @@ function SimulationControl({ onApply, currentOverride, compact }) {
     return initial;
   });
 
+  // Pixel cleared -> close panel
+  useEffect(() => {
+    if (!pixel) setIsOpen(false);
+  }, [pixel]);
+
+  // Raster shown -> force-close panel
+  useEffect(() => {
+    if (disabled) setIsOpen(false);
+  }, [disabled]);
+
   const commit = (vals) => {
+    if (disabled) return;
     const active = {};
     Object.keys(vals).forEach((k) => {
       if (vals[k] !== 0) active[k] = vals[k];
@@ -2959,16 +3127,16 @@ function SimulationControl({ onApply, currentOverride, compact }) {
   };
 
   const handleReset = () => {
-    const resetValues = {};
+    const r = {};
     rawFeatures.forEach((f) => {
-      resetValues[f.key] = 0;
+      r[f.key] = 0;
     });
-    setValues(resetValues);
+    setValues(r);
     onApply(null);
   };
 
   const hasActiveOverrides =
-    currentOverride && Object.keys(currentOverride).length > 0;
+    !disabled && currentOverride && Object.keys(currentOverride).length > 0;
 
   return (
     <div
@@ -2978,20 +3146,45 @@ function SimulationControl({ onApply, currentOverride, compact }) {
         alignItems: "flex-start",
       }}
     >
-      {!isOpen ? (
+      {!isOpen || disabled ? (
         <button
-          onClick={() => setIsOpen(true)}
+          disabled={disabled}
+          onClick={() => {
+            if (disabled) return;
+            pixel ? setIsOpen(true) : onRequestPixel?.();
+          }}
+          title={
+            disabled
+              ? "Simulation is unavailable while the full raster is displayed"
+              : pixel
+                ? "Simulate on the selected pixel"
+                : "Pick a pixel on the map first"
+          }
           style={{
             ...UNIFORM_CARD_STYLE,
             border: hasActiveOverrides
               ? "2px solid #2563eb"
               : "1px solid rgba(255,255,255,0.4)",
-            color: hasActiveOverrides ? "#2563eb" : "#333",
+            color: disabled
+              ? "#94a3b8"
+              : hasActiveOverrides
+                ? "#2563eb"
+                : pixel
+                  ? "#333"
+                  : "#94a3b8",
             gap: "6px",
+            opacity: disabled ? 0.55 : 1,
+            cursor: disabled ? "not-allowed" : "pointer",
           }}
         >
           <SlidersHorizontal size={14} />
-          {hasActiveOverrides ? "Simulation Active" : "Simulate"}
+          {disabled
+            ? "Simulation off"
+            : hasActiveOverrides
+              ? "Simulation Active"
+              : pixel
+                ? "Simulate"
+                : "Pick a pixel first"}
         </button>
       ) : (
         <div
@@ -3014,10 +3207,17 @@ function SimulationControl({ onApply, currentOverride, compact }) {
               marginBottom: "4px",
             }}
           >
-            <h4 style={{ margin: 0, fontSize: 12, fontWeight: "bold" }}>
-              Simulate
-            </h4>
-            <div style={{ display: "flex", gap: 6 }}>
+            <div>
+              <h4 style={{ margin: 0, fontSize: 12, fontWeight: "bold" }}>
+                Simulate pixel
+              </h4>
+              {pixel && (
+                <div style={{ fontSize: 9, color: "#64748b", fontWeight: 400 }}>
+                  {pixel.lat.toFixed(5)}, {pixel.lng.toFixed(5)}
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "flex-start" }}>
               <button
                 onClick={handleReset}
                 style={{
@@ -3085,6 +3285,108 @@ function SimulationControl({ onApply, currentOverride, compact }) {
         </div>
       )}
     </div>
+  );
+}
+
+function PixelMarkerLayer({ pixel, risk }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!pixel) return;
+    const color = FSI_COLORS[risk] || "#2563eb";
+    const m = L.marker([pixel.lat, pixel.lng], {
+      pane: "facilities-pane",
+      interactive: false,
+      icon: L.divIcon({
+        className: "custom-poi-marker",
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+        html: `<div style="width:22px;height:22px;border-radius:50%;border:3px solid #fff;background:${color};box-shadow:0 0 0 2px #2563eb,0 2px 6px rgba(0,0,0,.4);"></div>`,
+      }),
+    }).addTo(map);
+    return () => map.removeLayer(m);
+  }, [map, pixel, risk]);
+  return null;
+}
+
+function PixelCard({ pixel, result, simulationActive, onClear }) {
+  const { base, sim, loading, error } = result;
+  const Row = ({ label, r }) => {
+    if (!r) return null;
+    const color = FSI_COLORS[r.risk_class] || "#9e9e9e";
+    return (
+      <div className="flex justify-between items-center border-b pb-2">
+        <span className="text-muted-foreground">{label}</span>
+        <span className="flex items-center gap-2">
+          <span className="font-medium tabular-nums">
+            {typeof r.probability === "number"
+              ? `${(r.probability * 100).toFixed(1)}%`
+              : "—"}
+          </span>
+          <span
+            className="text-xs font-bold px-2 py-0.5 rounded-full text-white"
+            style={{ backgroundColor: color }}
+          >
+            {r.risk_class}
+          </span>
+        </span>
+      </div>
+    );
+  };
+  const delta =
+    base &&
+    sim &&
+    typeof base.probability === "number" &&
+    typeof sim.probability === "number"
+      ? (sim.probability - base.probability) * 100
+      : null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex justify-between items-start gap-2">
+          <div>
+            <div className="text-xs uppercase tracking-wide text-muted-foreground">
+              Selected Pixel
+            </div>
+            <CardTitle className="text-base tabular-nums">
+              {pixel.lat.toFixed(5)}, {pixel.lng.toFixed(5)}
+            </CardTitle>
+          </div>
+          <Button variant="outline" size="sm" onClick={onClear}>
+            Clear
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        {!USE_SERVER && (
+          <p className="text-xs text-muted-foreground">
+            Simulation needs the model server (VITE_USE_SERVER=true).
+          </p>
+        )}
+        {loading && <Skeleton className="h-8 w-full" />}
+        {error && <p className="text-xs text-red-500">{error}</p>}
+        {!loading && <Row label="Baseline" r={base} />}
+        {!loading && simulationActive && <Row label="Simulated" r={sim} />}
+        {!loading && delta != null && (
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Change</span>
+            <span
+              className="font-semibold tabular-nums"
+              style={{ color: delta > 0 ? "#d73027" : "#4575b4" }}
+            >
+              {delta > 0 ? "+" : ""}
+              {delta.toFixed(1)} pp
+            </span>
+          </div>
+        )}
+        {!simulationActive && !loading && (
+          <p className="text-xs text-muted-foreground">
+            Open <strong>Simulate</strong> and move a slider to see how this
+            pixel changes.
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -4181,7 +4483,11 @@ function FacilityDetailsPanel({
   selectedFacility,
   onClearFacility,
   selectedEvent,
-  qgisStats, // <-- New prop
+  qgisStats,
+  selectedPixel,
+  pixelResult,
+  simulationActive,
+  onClearPixel,
 }) {
   const {
     mode = "idle",
@@ -4211,6 +4517,28 @@ function FacilityDetailsPanel({
             <strong>Barangay</strong> mode on the map to start.
           </CardContent>
         </Card>
+      </div>
+    );
+  }
+
+  if (mapMode === "pixel") {
+    return (
+      <div className="space-y-4">
+        {selectedPixel ? (
+          <PixelCard
+            pixel={selectedPixel}
+            result={pixelResult}
+            simulationActive={simulationActive}
+            onClear={onClearPixel}
+          />
+        ) : (
+          <Card className="border-dashed border-slate-300 bg-slate-50">
+            <CardContent className="p-4 text-center text-sm text-slate-600">
+              Click a spot inside Zamboanga City to choose a pixel, then use{" "}
+              <strong>Simulate</strong>.
+            </CardContent>
+          </Card>
+        )}
       </div>
     );
   }
@@ -4477,34 +4805,58 @@ function OriginCard({ origin }) {
   );
 }
 
+const RASTER_MODEL = import.meta.env.VITE_RASTER_MODEL || "m4_stacking_all";
+
 function FSIRasterLayer({ model, event, visible, cityBoundary }) {
   const map = useMap();
   const layerRef = useRef(null);
-  const breaksRef = useRef([0.654, 0.746, 0.782]);
+  const defaultBreaksRef = useRef([0.654, 0.746, 0.782]);
 
+  // Fallback breaks from /api/models (used if the raster response has none)
   useEffect(() => {
     fetch(`${API_BASE_URL}/api/models`)
       .then((res) => res.json())
       .then((data) => {
         if (data.risk_mapping) {
           const b = data.risk_mapping.map((r) => r.upper).slice(0, 3);
-          if (b.length === 3) breaksRef.current = b;
+          if (b.length === 3) defaultBreaksRef.current = b;
         }
       })
       .catch((err) => console.warn("Could not fetch risk breaks:", err));
   }, []);
 
   useEffect(() => {
+    const removeLayer = () => {
+      if (layerRef.current) {
+        map.removeLayer(layerRef.current);
+        layerRef.current = null;
+      }
+    };
+
     if (!visible || !model || !cityBoundary) {
-      if (layerRef.current) map.removeLayer(layerRef.current);
+      removeLayer();
       return;
     }
+
+    let cancelled = false;
 
     const fetchRaster = async () => {
       try {
         const res = await fetch(`${API_BASE_URL}/api/raster/${event}/${model}`);
-        if (!res.ok) throw new Error("Failed to fetch TIFF");
+        if (!res.ok)
+          throw new Error(`Failed to fetch TIFF (HTTP ${res.status})`);
+
+        // Per-event breaks from the response header, e.g. "0.49,0.63,0.71"
+        let breaks = defaultBreaksRef.current;
+        const hdr = res.headers.get("X-Risk-Breaks");
+        if (hdr) {
+          const parsed = hdr.split(",").map(Number);
+          if (parsed.length === 3 && parsed.every(Number.isFinite))
+            breaks = parsed;
+        }
+
         const arrayBuffer = await res.arrayBuffer();
+        if (cancelled) return;
 
         const tiff = await geotiff.fromArrayBuffer(arrayBuffer);
         const image = await tiff.getImage();
@@ -4513,6 +4865,7 @@ function FSIRasterLayer({ model, event, visible, cityBoundary }) {
         const height = image.getHeight();
         const data = await image.readRasters();
         const values = data[0];
+        if (cancelled) return;
 
         let noDataValue = null;
         try {
@@ -4527,7 +4880,7 @@ function FSIRasterLayer({ model, event, visible, cityBoundary }) {
         const ctx = canvas.getContext("2d");
         const imgData = ctx.createImageData(width, height);
 
-        const [t1, t2, t3] = breaksRef.current;
+        const [t1, t2, t3] = breaks;
 
         for (let i = 0; i < values.length; i++) {
           const idx = i * 4;
@@ -4536,6 +4889,7 @@ function FSIRasterLayer({ model, event, visible, cityBoundary }) {
           if (
             val === null ||
             val === undefined ||
+            !Number.isFinite(val) ||
             val < 0 ||
             (noDataValue !== null && val === noDataValue)
           ) {
@@ -4552,7 +4906,7 @@ function FSIRasterLayer({ model, event, visible, cityBoundary }) {
           imgData.data[idx] = color[0];
           imgData.data[idx + 1] = color[1];
           imgData.data[idx + 2] = color[2];
-          imgData.data[idx + 3] = 180;
+          imgData.data[idx + 3] = 300;
         }
         ctx.putImageData(imgData, 0, 0);
 
@@ -4593,20 +4947,23 @@ function FSIRasterLayer({ model, event, visible, cityBoundary }) {
           [tr.lat, tr.lng],
         ];
 
-        if (layerRef.current) map.removeLayer(layerRef.current);
+        if (cancelled) return;
+        removeLayer();
         layerRef.current = L.imageOverlay(dataUrl, bounds, {
-          opacity: 0.85,
-          pane: "fsi-pane",
+          opacity: 1, // was 0.85
+          interactive: false,
+          pane: "raster-pane", // was "fsi-pane"
         }).addTo(map);
       } catch (err) {
-        console.error("[FSI Raster] Error:", err);
+        if (!cancelled) console.error("[FSI Raster] Error:", err);
       }
     };
 
     fetchRaster();
 
     return () => {
-      if (layerRef.current) map.removeLayer(layerRef.current);
+      cancelled = true;
+      removeLayer();
     };
   }, [map, model, event, visible, cityBoundary]);
 
@@ -4948,6 +5305,18 @@ function FloodMap() {
   const [availableEvents, setAvailableEvents] = useState(["overall"]);
   const [simulationOverride, setSimulationOverride] = useState(null);
 
+  const [fsiMapMode, setFsiMapMode] = useState("none");
+  const showRaster = rasterVisible || fsiMapMode === "susceptibility";
+
+  // Pixel simulation
+  const [selectedPixel, setSelectedPixel] = useState(null);
+  const [pixelResult, setPixelResult] = useState({
+    base: null,
+    sim: null,
+    loading: false,
+    error: null,
+  });
+
   const [selection, setSelection] = useState({
     mode: "idle",
     results: [],
@@ -4995,6 +5364,10 @@ function FloodMap() {
   }, []);
 
   useEffect(() => {
+    if (showRaster) setSimulationOverride(null);
+  }, [showRaster]);
+
+  useEffect(() => {
     fetch(`${API_BASE_URL}/api/events/models`)
       .then((res) => res.json())
       .then((data) => {
@@ -5025,10 +5398,19 @@ function FloodMap() {
   useEffect(() => {
     if (
       !isDesktop &&
-      (selection.mode === "done" || selectedBarangay || selectedFacility)
+      (selection.mode === "done" ||
+        selectedBarangay ||
+        selectedFacility ||
+        selectedPixel)
     )
       setDrawerOpen(true);
-  }, [isDesktop, selection.mode, selectedBarangay, selectedFacility]);
+  }, [
+    isDesktop,
+    selection.mode,
+    selectedBarangay,
+    selectedFacility,
+    selectedPixel,
+  ]);
 
   const searchSelectRef = useRef(null);
   const clearLocationRef = useRef(null);
@@ -5132,6 +5514,11 @@ function FloodMap() {
     setActiveQGISLayers((prev) => (prev.includes(key) ? [] : [key]));
   }, []);
 
+  // NEW: FSI / Susceptibility map toggle
+  const handleFsiMapModeChange = useCallback((mode) => {
+    setFsiMapMode(mode);
+  }, []);
+
   const handleQGISLoadError = useCallback((key, msg) => {
     setQgisLayerErrors((p) => {
       const n = { ...p };
@@ -5177,9 +5564,27 @@ function FloodMap() {
     }));
   };
 
+  // ---- Pixel simulation handlers ----
+  const handleApplySimulation = (o) => setSimulationOverride(o);
+
+  const handlePixelSelect = useCallback((latlng) => {
+    setSelectedPixel({ lat: latlng.lat, lng: latlng.lng });
+    setSimulationOverride(null);
+    setSelectedFacility(null);
+  }, []);
+
+  const handleClearPixel = useCallback(() => {
+    setSelectedPixel(null);
+    setSimulationOverride(null);
+  }, []);
+
   const handleModeChange = useCallback((newMode) => {
     setMapMode(newMode);
     if (newMode !== "barangay") setSelectedBarangay(null);
+    if (newMode !== "pixel") {
+      setSelectedPixel(null);
+      setSimulationOverride(null);
+    }
     setSelectedFacility(null);
   }, []);
 
@@ -5191,6 +5596,10 @@ function FloodMap() {
 
   const handleSearchSelect = useCallback(
     (latlng) => {
+      if (mapMode === "pixel") {
+        handlePixelSelect(latlng);
+        return;
+      }
       if (barangayData) {
         const b = findBarangayForPoint(latlng, barangayData);
         if (b) {
@@ -5201,8 +5610,57 @@ function FloodMap() {
       }
       searchSelectRef.current?.(latlng);
     },
-    [barangayData, handleBarangaySelect],
+    [barangayData, handleBarangaySelect, mapMode, handlePixelSelect],
   );
+
+  // Baseline + simulated prediction for the selected pixel
+  useEffect(() => {
+    if (!selectedPixel || !USE_SERVER) {
+      setPixelResult({ base: null, sim: null, loading: false, error: null });
+      return;
+    }
+    const ctrl = new AbortController();
+    const pts = [{ lat: selectedPixel.lat, lng: selectedPixel.lng }];
+    setPixelResult((p) => ({ ...p, loading: true, error: null }));
+    Promise.all([
+      fetchServerFsiBatch(
+        pts,
+        DEFAULT_FSI_MODEL,
+        selectedEvent,
+        null,
+        ctrl.signal,
+      ),
+      simulationOverride
+        ? fetchServerFsiBatch(
+            pts,
+            DEFAULT_FSI_MODEL,
+            selectedEvent,
+            simulationOverride,
+            ctrl.signal,
+          )
+        : Promise.resolve(null),
+    ])
+      .then(([b, s]) => {
+        const base = b?.results?.[0];
+        const sim = s?.results?.[0] ?? null;
+        setPixelResult({
+          base: base && !base.error ? base : null,
+          sim: sim && !sim.error ? sim : null,
+          loading: false,
+          error: base?.error || sim?.error || null,
+        });
+      })
+      .catch((err) => {
+        if (err.name !== "AbortError")
+          setPixelResult({
+            base: null,
+            sim: null,
+            loading: false,
+            error: err.message,
+          });
+      });
+    return () => ctrl.abort();
+  }, [selectedPixel, selectedEvent, simulationOverride]);
 
   const handleSelectAllTypes = useCallback(() => setSelectedTypes([]), []);
   const handleToggleType = useCallback((type) => {
@@ -5214,10 +5672,6 @@ function FloodMap() {
     setFacilitiesVisible((v) => !v);
   }, []);
   const handleToggleFsi = useCallback(() => setFsiVisible((v) => !v), []);
-
-  const handleApplySimulation = (overrideObject) => {
-    setSimulationOverride(overrideObject);
-  };
 
   const effectiveHiddenFacilities = useMemo(() => {
     const hidden = new Set();
@@ -5312,7 +5766,6 @@ function FloodMap() {
             <LogIn size={14} />
             Login
           </Button>
-          {/* Sidebar close toggle now lives INSIDE the sidebar (desktop) */}
           {isDesktop && (
             <Button
               type="button"
@@ -5344,6 +5797,10 @@ function FloodMap() {
         onClearFacility={() => setSelectedFacility(null)}
         selectedEvent={selectedEvent}
         qgisStats={barangayQGISStats}
+        selectedPixel={selectedPixel}
+        pixelResult={pixelResult}
+        simulationActive={!!simulationOverride}
+        onClearPixel={handleClearPixel}
       />
     </div>
   );
@@ -5420,21 +5877,30 @@ function FloodMap() {
           <CustomPanes />
           <MapResizer />
           <FSIRasterLayer
-            model={DEFAULT_FSI_MODEL}
+            model={RASTER_MODEL}
             event={selectedEvent}
-            visible={rasterVisible}
+            visible={showRaster}
             cityBoundary={cityBoundary}
           />
           <ZamboangaMask
             onBoundaryLoaded={handleBoundaryLoaded}
             onBarangaysLoaded={handleBarangaysLoaded}
-            rasterActive={rasterVisible}
+            rasterActive={showRaster}
             fsiVisible={fsiVisible}
             mapMode={mapMode}
             selectedBarangayName={selectedBarangay?.name || null}
             fsiModel={DEFAULT_FSI_MODEL}
             selectedEvent={selectedEvent}
-            simulationOverride={simulationOverride}
+            onFsiStatusChange={setFsiStatus}
+          />
+
+          <FsiMapLayer
+            mode={fsiMapMode === "susceptibility" ? "none" : fsiMapMode}
+            fsiVisible={fsiVisible}
+            cityBoundary={cityBoundary}
+            barangayData={barangayData}
+            fsiModel={DEFAULT_FSI_MODEL}
+            selectedEvent={selectedEvent}
             onFsiStatusChange={setFsiStatus}
           />
 
@@ -5475,10 +5941,15 @@ function FloodMap() {
             onLocationChange={handleLocationChange}
             mapMode={mapMode}
             onBarangaySelect={handleBarangaySelect}
+            onPixelSelect={handlePixelSelect}
             onMapClick={() => {
               setSelectedFacility(null);
               setOpenOverlay(null);
             }}
+          />
+          <PixelMarkerLayer
+            pixel={selectedPixel}
+            risk={(pixelResult.sim || pixelResult.base)?.risk_class}
           />
           <MapControls
             onLocate={handleLocate}
@@ -5494,6 +5965,15 @@ function FloodMap() {
             legendOpen={legendOpen}
             setLegendOpen={setLegendOpen}
           />
+
+          <FsiModeControl
+            mode={fsiMapMode}
+            onModeChange={setFsiMapMode}
+            selectedEvent={selectedEvent}
+            compact={compact}
+            bottomOffset={showPeek ? PEEK_HEIGHT : 0}
+          />
+
           <QGISLegend
             layerKey={activeLayerKey}
             config={activeLayerKey ? QGIS_LAYER_CONFIGS[activeLayerKey] : null}
@@ -5504,8 +5984,6 @@ function FloodMap() {
           />
         </MapContainer>
 
-        {/* Only shown when the sidebar is CLOSED, so it can be reopened.
-            While open, the toggle is inside the sidebar header. */}
         {isDesktop && !sidebarOpen && (
           <Button
             type="button"
@@ -5536,12 +6014,13 @@ function FloodMap() {
               <ChevronUp className="h-4 w-4 text-muted-foreground" />
               {mapMode === "barangay"
                 ? "Barangay Details"
-                : "Nearby Facilities"}
+                : mapMode === "pixel"
+                  ? "Pixel Simulation"
+                  : "Nearby Facilities"}
             </span>
           </button>
         )}
 
-        {/* Left Side Controls Wrapper */}
         <div
           style={{
             position: "absolute",
@@ -5591,9 +6070,17 @@ function FloodMap() {
 
           <div style={{ pointerEvents: "auto" }}>
             <SimulationControl
+              key={`${
+                selectedPixel
+                  ? `${selectedPixel.lat},${selectedPixel.lng}`
+                  : "none"
+              }-${showRaster ? "raster" : "free"}`}
               onApply={handleApplySimulation}
               currentOverride={simulationOverride}
+              pixel={selectedPixel}
+              onRequestPixel={() => handleModeChange("pixel")}
               compact={compact}
+              disabled={showRaster}
             />
           </div>
 
