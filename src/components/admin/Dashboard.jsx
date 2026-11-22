@@ -11,6 +11,7 @@ import {
   ArrowRight,
   TrendingUp,
   CalendarDays,
+  Layers,
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 import { Button } from "@/components/ui/button";
@@ -72,15 +73,15 @@ export default function Dashboard() {
   const stats = [
     {
       title: "Total Models",
-      value: "16",
-      subtext: "4 Categories × 4 Models",
+      value: "24",
+      subtext: "4 Categories × 6 Models",
       icon: Cpu,
       color: "text-blue-600",
       bg: "bg-blue-100",
     },
     {
       title: "Dataset Size",
-      value: "20,000",
+      value: "44,178",
       subtext: "Flood & Non-flood samples",
       icon: Database,
       color: "text-green-600",
@@ -88,8 +89,8 @@ export default function Dashboard() {
     },
     {
       title: "Best AUC",
-      value: "0.9010",
-      subtext: "GWR (Overall Category)",
+      value: "0.8161",
+      subtext: "GWR-MGWR (Jul 2024)",
       icon: TrendingUp,
       color: "text-amber-600",
       bg: "bg-amber-100",
@@ -102,13 +103,21 @@ export default function Dashboard() {
       color: "text-purple-600",
       bg: "bg-purple-100",
     },
+    {
+      title: "Flood-able Terrain",
+      value: "8.6%",
+      subtext: "1,831,387 of 21,226,545 land pixels",
+      icon: Layers,
+      color: "text-cyan-600",
+      bg: "bg-cyan-100",
+    },
   ];
 
   const categories = [
-    { name: "Overall", models: 4, best: "Stacking Ensemble", auc: "0.9017" },
-    { name: "Oct 2022 (Paeng)", models: 4, best: "GWR", auc: "0.9507" },
-    { name: "Jan 2023 (Shearline)", models: 4, best: "MGWR", auc: "0.8959" },
-    { name: "Jul 2024 (Habagat)", models: 4, best: "SVM", auc: "0.8223" },
+    { name: "Overall", models: 6, best: "MGWR", auc: "0.6499" },
+    { name: "Oct 2022 (Paeng)", models: 6, best: "Stacking Ensemble", auc: "0.6486" },
+    { name: "Jan 2023 (Shearline)", models: 6, best: "GWR-MGWR", auc: "0.7518" },
+    { name: "Jul 2024 (Habagat)", models: 6, best: "GWR-MGWR", auc: "0.8161" },
   ];
 
   return (
@@ -233,9 +242,9 @@ export default function Dashboard() {
 
           <div className="p-8 space-y-8 max-w-7xl mx-auto">
             {/* Stats Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-6">
               {isLoading
-                ? [1, 2, 3, 4].map((i) => (
+                ? [1, 2, 3, 4, 5].map((i) => (
                     <Card key={i} className="border-slate-200 shadow-sm">
                       <CardContent className="p-6 flex items-center justify-between">
                         <div className="space-y-2">
@@ -284,7 +293,7 @@ export default function Dashboard() {
                 <CardHeader className="border-b border-slate-100 pb-4">
                   <CardTitle className="text-lg">Model Categories</CardTitle>
                   <CardDescription>
-                    Performance of the 16-model suite per flood event
+                    Spatial-block validation AUC of the 24-model suite per flood event
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="p-0">
