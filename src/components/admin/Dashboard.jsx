@@ -115,8 +115,18 @@ export default function Dashboard() {
 
   const categories = [
     { name: "Overall", models: 6, best: "MGWR", auc: "0.6499" },
-    { name: "Oct 2022 (Paeng)", models: 6, best: "Stacking Ensemble", auc: "0.6486" },
-    { name: "Jan 2023 (Shearline)", models: 6, best: "GWR-MGWR", auc: "0.7518" },
+    {
+      name: "Oct 2022 (Paeng)",
+      models: 6,
+      best: "Stacking Ensemble",
+      auc: "0.6486",
+    },
+    {
+      name: "Jan 2023 (Shearline)",
+      models: 6,
+      best: "GWR-MGWR",
+      auc: "0.7518",
+    },
     { name: "Jul 2024 (Habagat)", models: 6, best: "GWR-MGWR", auc: "0.8161" },
   ];
 
@@ -284,16 +294,17 @@ export default function Dashboard() {
                   ))}
             </div>
 
-            {/* Table & Side Panels */}
+            {/* Table & Side Panel */}
             <div
-              className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-fade-in-up delay-200"
+              className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-stretch animate-fade-in-up delay-200"
               style={{ opacity: 0 }}
             >
               <Card className="lg:col-span-2 border-slate-200 shadow-sm hover:shadow-md transition-shadow">
                 <CardHeader className="border-b border-slate-100 pb-4">
                   <CardTitle className="text-lg">Model Categories</CardTitle>
                   <CardDescription>
-                    Spatial-block validation AUC of the 24-model suite per flood event
+                    Spatial-block validation AUC of the 24-model suite per flood
+                    event
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="p-0">
@@ -352,108 +363,46 @@ export default function Dashboard() {
                 </CardContent>
               </Card>
 
-              <div className="space-y-6">
-                <Card className="border-slate-200 shadow-sm bg-slate-900 text-white">
-                  <CardHeader>
-                    <CardTitle className="text-lg text-white">
-                      System Status
-                    </CardTitle>
-                    <CardDescription className="text-slate-400">
-                      API and model server status
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    {isLoading ? (
-                      [1, 2, 3].map((row) => (
-                        <div key={row} className="flex justify-between">
-                          <Skeleton className="h-4 w-24 bg-slate-700" />
-                          <Skeleton className="h-4 w-16 bg-slate-700" />
-                        </div>
-                      ))
-                    ) : (
-                      <>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-slate-300">
-                            FastAPI Backend
-                          </span>
-                          <span className="flex items-center gap-2 text-green-400">
-                            <span className="animate-ping absolute h-2 w-2 rounded-full bg-green-400 opacity-75"></span>
-                            <span className="relative h-2 w-2 rounded-full bg-green-500"></span>{" "}
-                            Online
-                          </span>
-                        </div>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-slate-300">Supabase DB</span>
-                          <span className="flex items-center gap-2 text-green-400">
-                            <span className="animate-ping absolute h-2 w-2 rounded-full bg-green-400 opacity-75"></span>
-                            <span className="relative h-2 w-2 rounded-full bg-green-500"></span>{" "}
-                            Connected
-                          </span>
-                        </div>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-slate-300">
-                            R Engine (MARS)
-                          </span>
-                          <span className="flex items-center gap-2 text-amber-400">
-                            <span className="relative h-2 w-2 rounded-full bg-amber-500"></span>{" "}
-                            Idle
-                          </span>
-                        </div>
-                      </>
-                    )}
-                  </CardContent>
-                </Card>
-
-                <Card className="border-slate-200 shadow-sm">
-                  <CardHeader>
-                    <CardTitle className="text-lg">Quick Actions</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    {isLoading ? (
-                      [1, 2, 3].map((btn) => (
-                        <Skeleton
-                          key={btn}
-                          className="h-10 w-full rounded-md"
-                        />
-                      ))
-                    ) : (
-                      <>
-                        <Button
-                          variant="outline"
-                          className="w-full justify-start group"
-                        >
-                          <Cpu
-                            size={16}
-                            className="mr-2 group-hover:rotate-12 transition-transform"
-                          />{" "}
-                          Retrain Models
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className="w-full justify-start group"
-                        >
-                          <Database
-                            size={16}
-                            className="mr-2 group-hover:-translate-y-1 transition-transform"
-                          />{" "}
-                          Export Dataset
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className="w-full justify-start group"
-                          onClick={() => navigate("/users")}
-                        >
-                          <Users
-                            size={16}
-                            className="mr-2 group-hover:scale-110 transition-transform"
-                          />{" "}
-                          Manage Users
-                        </Button>
-                      </>
-                    )}
-                  </CardContent>
-                </Card>
-              </div>
+              {/* System Status now fills the full column height */}
+              <Card className="border-slate-200 shadow-sm bg-slate-900 text-white flex flex-col">
+                <CardHeader>
+                  <CardTitle className="text-lg text-white">
+                    System Status
+                  </CardTitle>
+                  <CardDescription className="text-slate-400">
+                    API and model server status
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4 flex-1">
+                  {isLoading ? (
+                    [1, 2, 3].map((row) => (
+                      <div key={row} className="flex justify-between">
+                        <Skeleton className="h-4 w-24 bg-slate-700" />
+                        <Skeleton className="h-4 w-16 bg-slate-700" />
+                      </div>
+                    ))
+                  ) : (
+                    <>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-slate-300">FastAPI Backend</span>
+                        <span className="flex items-center gap-2 text-green-400">
+                          <span className="animate-ping absolute h-2 w-2 rounded-full bg-green-400 opacity-75"></span>
+                          <span className="relative h-2 w-2 rounded-full bg-green-500"></span>{" "}
+                          Online
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-slate-300">Supabase DB</span>
+                        <span className="flex items-center gap-2 text-green-400">
+                          <span className="animate-ping absolute h-2 w-2 rounded-full bg-green-400 opacity-75"></span>
+                          <span className="relative h-2 w-2 rounded-full bg-green-500"></span>{" "}
+                          Connected
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
             </div>
           </div>
         </main>
