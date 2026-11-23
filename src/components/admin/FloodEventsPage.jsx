@@ -22,6 +22,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Calendar } from "@/components/ui/calendar";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Card,
   CardContent,
@@ -66,11 +72,27 @@ const API_BASE_URL =
 
 const EXPECTED_METADATA = {
   width: 5923,
-  height: 7299,
-  originX: 121.89749655352134,
-  originY: 7.513751632015,
+  height: 7300,
+  originX: 121.89748658487044,
+  originY: 7.513799502621049,
   pixelSizeX: 8.983152841195215e-5,
   pixelSizeY: 8.983152841195215e-5,
+};
+
+const EMPTY_METADATA = {
+  eventName: "",
+  eventDate: undefined, // JS Date from the calendar picker
+  rainfallDetails: "",
+  affectedBarangays: "",
+  affectedFamilies: "",
+  affectedIndividuals: "",
+  casualties: "",
+  infrastructureDamages: "",
+  totalCostDamaged: "",
+  houseDamagesDetails: "",
+  livestockDamages: "",
+  agriculturalDamages: "",
+  powerSupplyDamages: "",
 };
 
 async function validateTiffMetadata(file) {
@@ -106,12 +128,32 @@ async function validateTiffMetadata(file) {
   }
 }
 
+// Prefer the event's own date; fall back to upload date
+function formatEventDate(event) {
+  if (event.month && event.year) {
+    // Day is only shown when stored (older events have none)
+    const opts = event.day
+      ? { month: "long", day: "numeric", year: "numeric" }
+      : { month: "long", year: "numeric" };
+    return new Date(
+      event.year,
+      event.month - 1,
+      event.day || 1,
+    ).toLocaleDateString("en-US", opts);
+  }
+  return new Date(event.created_at).toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
+  });
+}
+
 export default function FloodEventsPage() {
   const navigate = useNavigate();
   const [dbEvents, setDbEvents] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
+  const [isCalendarOpen, setIsCalendarOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
@@ -124,20 +166,7 @@ export default function FloodEventsPage() {
     ndfi: { file: null, status: "idle", message: "" },
   });
 
-  const [metadata, setMetadata] = useState({
-    eventName: "",
-    rainfallDetails: "",
-    affectedBarangays: "",
-    affectedFamilies: "",
-    affectedIndividuals: "",
-    casualties: "",
-    infrastructureDamages: "",
-    totalCostDamaged: "",
-    houseDamagesDetails: "",
-    livestockDamages: "",
-    agriculturalDamages: "",
-    powerSupplyDamages: "",
-  });
+  const [metadata, setMetadata] = useState(EMPTY_METADATA);
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768);
@@ -187,6 +216,12 @@ export default function FloodEventsPage() {
     if (successMsg) setSuccessMsg("");
   };
 
+  const handleDateSelect = (date) => {
+    setMetadata((prev) => ({ ...prev, eventDate: date }));
+    if (date) setIsCalendarOpen(false);
+    if (successMsg) setSuccessMsg("");
+  };
+
   const handleFileChange = async (e, type) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -208,6 +243,7 @@ export default function FloodEventsPage() {
 
   const isFormValid =
     metadata.eventName.trim() !== "" &&
+    !!metadata.eventDate &&
     files.floodMap.status === "success" &&
     files.diffDb.status === "success" &&
     files.ndfi.status === "success";
@@ -220,8 +256,14 @@ export default function FloodEventsPage() {
     setSubmitError("");
     setSuccessMsg("");
 
+    // The API takes month / day / year as separate integers
+    const d = metadata.eventDate;
+
     const formData = new FormData();
     formData.append("eventName", metadata.eventName);
+    formData.append("month", String(d.getMonth() + 1));
+    formData.append("day", String(d.getDate()));
+    formData.append("year", String(d.getFullYear()));
     formData.append("rainfallDetails", metadata.rainfallDetails);
     formData.append("affectedBarangays", metadata.affectedBarangays);
     formData.append("affectedFamilies", metadata.affectedFamilies);
@@ -246,20 +288,7 @@ export default function FloodEventsPage() {
       if (!response.ok)
         throw new Error(data.detail || "Failed to upload event data.");
 
-      setMetadata({
-        eventName: "",
-        rainfallDetails: "",
-        affectedBarangays: "",
-        affectedFamilies: "",
-        affectedIndividuals: "",
-        casualties: "",
-        infrastructureDamages: "",
-        totalCostDamaged: "",
-        houseDamagesDetails: "",
-        livestockDamages: "",
-        agriculturalDamages: "",
-        powerSupplyDamages: "",
-      });
+      setMetadata(EMPTY_METADATA);
       setFiles({
         floodMap: { file: null, status: "idle", message: "" },
         diffDb: { file: null, status: "idle", message: "" },
@@ -290,8 +319,8 @@ export default function FloodEventsPage() {
         <h4 className="text-sm font-semibold text-slate-900 border-b pb-2">
           General Information
         </h4>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-2">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="space-y-2 md:col-span-2">
             <Label htmlFor="eventName">Flood Event Name</Label>
             <Input
               id="eventName"
@@ -302,7 +331,43 @@ export default function FloodEventsPage() {
               required
             />
           </div>
-          <div className="space-y-2 md:col-span-2">
+          <div className="space-y-2">
+            <Label>Event Date</Label>
+            <Popover open={isCalendarOpen} onOpenChange={setIsCalendarOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className={`w-full justify-start gap-2 font-normal ${
+                    metadata.eventDate ? "" : "text-muted-foreground"
+                  }`}
+                >
+                  <CalendarDays className="h-4 w-4" />
+                  {metadata.eventDate
+                    ? metadata.eventDate.toLocaleDateString("en-US", {
+                        month: "long",
+                        day: "numeric",
+                        year: "numeric",
+                      })
+                    : "Pick a date"}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="start">
+                <Calendar
+                  mode="single"
+                  selected={metadata.eventDate}
+                  onSelect={handleDateSelect}
+                  defaultMonth={metadata.eventDate}
+                  captionLayout="dropdown"
+                  startMonth={new Date(2000, 0)}
+                  endMonth={new Date()}
+                  disabled={(date) => date > new Date()}
+                  autoFocus
+                />
+              </PopoverContent>
+            </Popover>
+          </div>
+          <div className="space-y-2 md:col-span-3">
             <Label htmlFor="rainfallDetails">
               Amount of Rainfall / Details
             </Label>
@@ -736,10 +801,7 @@ export default function FloodEventsPage() {
                         </CardTitle>
                         <CardDescription className="flex items-center gap-1.5 mt-1">
                           <CalendarDays className="h-4 w-4" />
-                          {new Date(event.created_at).toLocaleDateString(
-                            "en-US",
-                            { month: "long", year: "numeric" },
-                          )}
+                          {formatEventDate(event)}
                         </CardDescription>
                       </CardHeader>
                       <CardContent className="flex-1">
